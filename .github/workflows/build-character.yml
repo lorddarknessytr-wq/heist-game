@@ -14,8 +14,67 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Check Python indentation and syntax
-        run: python3 -m py_compile night_courier.py
+      - name: Check Python syntax and required tile constants
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile night_courier.py
+          python3 - <<'PYCODE'
+          import ast
+          from pathlib import Path
+
+          path = Path("night_courier.py")
+          tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+          module_names = set()
+          for node in tree.body:
+              if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                  module_names.add(node.name)
+              elif isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+                  targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                  for target in targets:
+                      for item in ast.walk(target):
+                          if isinstance(item, ast.Name):
+                              module_names.add(item.id)
+              elif isinstance(node, ast.Import):
+                  for item in node.names:
+                      module_names.add(item.asname or item.name.split(".")[0])
+              elif isinstance(node, ast.ImportFrom):
+                  for item in node.names:
+                      module_names.add(item.asname or item.name)
+
+          loaded_names = {
+              node.id for node in ast.walk(tree)
+              if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+          }
+          missing = sorted(
+              name for name in loaded_names
+              if name.startswith(("T_", "M_")) and name not in module_names
+          )
+          if missing:
+              raise SystemExit("Undefined material/tile constants: " + ", ".join(missing))
+
+          required = {
+              "T_FABRIC", "T_HOOD", "T_ARMOR", "T_TROUSERS", "T_MASK_SIDE",
+              "T_TEAL", "T_AMBER", "T_LIGHT", "T_BOOT", "T_GLOVE", "T_PACK",
+              "T_SIGIL", "T_STRAP", "T_METAL", "T_SCREEN", "T_HOOD_INNER",
+              "T_KNEE", "T_CHEST", "T_BELT", "T_SOLE", "T_VENT", "T_TRIM"
+          }
+          absent = sorted(required - module_names)
+          if absent:
+              raise SystemExit("Required tile constants missing: " + ", ".join(absent))
+
+          deprecated_matrix_attributes = sorted({
+              node.attr for node in ast.walk(tree)
+              if isinstance(node, ast.Attribute)
+              and node.attr in {"row_size", "col_size"}
+          })
+          if deprecated_matrix_attributes:
+              raise SystemExit(
+                  "Unsupported mathutils.Matrix attributes: "
+                  + ", ".join(deprecated_matrix_attributes)
+              )
+          print("Python syntax, tile symbols, and matrix API source checks passed.")
+          PYCODE
 
       - name: Install Blender 4.2.23 LTS
         shell: bash
@@ -31,11 +90,29 @@ jobs:
             libdbus-1-3 libfontconfig1
           curl -fL --retry 3 "$URL" -o "$RUNNER_TEMP/$ARCHIVE"
           mkdir -p "$RUNNER_TEMP/blender"
-          tar -xJf "$RUNNER_TEMP/$ARCHIVE" \
-            --strip-components=1 -C "$RUNNER_TEMP/blender"
+          tar -xJf "$RUNNER_TEMP/$ARCHIVE" --strip-components=1 -C "$RUNNER_TEMP/blender"
           echo "$RUNNER_TEMP/blender" >> "$GITHUB_PATH"
           "$RUNNER_TEMP/blender/blender" --background --factory-startup \
             --python-expr "import bpy; print('BLENDER_VERSION=' + bpy.app.version_string)"
+
+      - name: Smoke-test PartBuilder rotation in Blender 4.2
+        shell: bash
+        run: |
+          set -euo pipefail
+          blender --background --factory-startup --python-expr '
+          import importlib.util
+          from mathutils import Matrix
+          spec = importlib.util.spec_from_file_location("night_courier_test", "night_courier.py")
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+          builder = module.PartBuilder()
+          rotation = Matrix.Rotation(0.10, 3, "X")
+          builder.box(1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0, 0, rotation=rotation)
+          assert len(builder.vertices) == 8, len(builder.vertices)
+          assert len(builder.faces) == 6, len(builder.faces)
+          assert len(builder.uvs) == 24, len(builder.uvs)
+          print("PART_BUILDER_ROTATION_TEST=PASSED")
+          '
 
       - name: Generate character.glb
         shell: bash
@@ -49,7 +126,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 - <<'PY'
+          python3 - <<'PYCODE'
           import json
           import pathlib
           import struct
@@ -66,55 +143,55 @@ jobs:
           json_length, json_type = struct.unpack_from("<I4s", data, 12)
           if json_type != b"JSON":
               raise SystemExit("ERROR: first GLB chunk is not JSON")
-          doc = json.loads(data[20:20 + json_length].decode("utf-8").rstrip("\x00 \t\r\n"))
+          document = json.loads(data[20:20 + json_length].decode("utf-8").rstrip("\x00 \t\r\n"))
 
-          if not doc.get("meshes"):
+          if not document.get("meshes"):
               raise SystemExit("ERROR: GLB contains no meshes")
-          if not doc.get("materials"):
+          if not document.get("materials"):
               raise SystemExit("ERROR: GLB contains no materials")
 
-          skins = doc.get("skins", [])
+          skins = document.get("skins", [])
           if not skins:
               raise SystemExit("ERROR: GLB contains no skin")
           joint_count = len(skins[0].get("joints", []))
           if joint_count != 20:
               raise SystemExit(f"ERROR: expected 20 skin joints, found {joint_count}")
 
-          required = {"IDLE", "LOOK_AROUND", "WALK", "RUN", "TURN_LEFT", "TURN_RIGHT", "SOCIAL_WAVE"}
-          found = set()
-          for animation in doc.get("animations", []):
+          required_clips = {"IDLE", "LOOK_AROUND", "WALK", "RUN", "TURN_LEFT", "TURN_RIGHT", "SOCIAL_WAVE"}
+          found_clips = set()
+          for animation in document.get("animations", []):
               name = animation.get("name", "")
               if not animation.get("channels"):
-                  continue
-              for clip in required:
+                  raise SystemExit(f"ERROR: animation {name} has no channels")
+              for clip in required_clips:
                   if name == clip or name.endswith(clip) or name.endswith("|" + clip):
-                      found.add(clip)
-          missing = required - found
+                      found_clips.add(clip)
+          missing = required_clips - found_clips
           if missing:
               raise SystemExit("ERROR: missing animation clips: " + ", ".join(sorted(missing)))
 
-          embedded = sum(1 for image in doc.get("images", []) if "bufferView" in image)
-          if embedded < 2:
-              raise SystemExit(f"ERROR: expected at least 2 embedded images, found {embedded}")
+          embedded_images = sum(1 for image in document.get("images", []) if "bufferView" in image)
+          if embedded_images < 2:
+              raise SystemExit(f"ERROR: expected at least 2 embedded images, found {embedded_images}")
 
           has_skin_attributes = any(
               "JOINTS_0" in primitive.get("attributes", {}) and
               "WEIGHTS_0" in primitive.get("attributes", {})
-              for mesh in doc.get("meshes", [])
+              for mesh in document.get("meshes", [])
               for primitive in mesh.get("primitives", [])
           )
           if not has_skin_attributes:
               raise SystemExit("ERROR: no JOINTS_0 / WEIGHTS_0 attributes")
 
           print(f"VALID CHARACTER GLB: {path.stat().st_size:,} bytes")
-          print(f"Meshes: {len(doc.get('meshes', []))} | Bones: {joint_count} | Animations: {len(found)} | Embedded images: {embedded}")
-          print("Animation names:", ", ".join(sorted(found)))
-          PY
+          print(f"Meshes: {len(document.get('meshes', []))} | Bones: {joint_count} | Animations: {len(found_clips)} | Embedded images: {embedded_images}")
+          print("Animation names:", ", ".join(sorted(found_clips)))
+          PYCODE
 
       - name: Upload character GLB
         uses: actions/upload-artifact@v4
         with:
-          name: night-courier-character-glb
+          name: night-courier-character-glb-v2
           path: output/character.glb
           if-no-files-found: error
           retention-days: 14
