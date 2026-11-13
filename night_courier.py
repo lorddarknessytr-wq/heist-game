@@ -58,6 +58,29 @@ T_TRIM = 33
 
 M_FABRIC, M_ARMOR, M_MASK, M_BOOT, M_GEAR = range(5)
 
+
+def validate_tile_constants():
+    """Fail early if a texture tile constant is misspelled or outside the atlas."""
+    tile_constants = {
+        name: value for name, value in globals().items()
+        if name.startswith("T_") and isinstance(value, int)
+    }
+    missing = sorted({"T_FABRIC", "T_HOOD", "T_ARMOR", "T_TROUSERS",
+                      "T_MASK_SIDE", "T_TEAL", "T_AMBER", "T_LIGHT",
+                      "T_BOOT", "T_GLOVE", "T_PACK", "T_SIGIL",
+                      "T_STRAP", "T_METAL", "T_SCREEN", "T_HOOD_INNER",
+                      "T_KNEE", "T_CHEST", "T_BELT", "T_SOLE",
+                      "T_VENT", "T_TRIM"} - set(tile_constants))
+    if missing:
+        fail("Missing texture tile constants: " + ", ".join(missing))
+    invalid = {name: value for name, value in tile_constants.items()
+               if not 0 <= value < GRID * GRID}
+    if invalid:
+        fail("Texture tile indices outside atlas: " + repr(invalid))
+
+
+validate_tile_constants()
+
 REQUIRED_BONES = [
     "Root", "Hips", "Spine", "Chest", "Neck", "Head",
     "Shoulder_L", "UpperArm_L", "LowerArm_L", "Hand_L",
@@ -434,7 +457,7 @@ def build_character(materials, armature, mesh_collection):
 
     # Hips / belt.
     p = part("NC_Hips", "Hips")
-    p.box(0.50, 0.30, 0.16, 0, 0, 0.96, T_TROUS, M_FABRIC)
+    p.box(0.50, 0.30, 0.16, 0, 0, 0.96, T_TROUSERS, M_FABRIC)
     p.box(0.52, 0.32, 0.07, 0, 0, 1.03, {"-Y": T_BELT, "all": T_STRAP}, M_GEAR)
     p.box(0.10, 0.03, 0.06, 0, -0.17, 1.03, T_LIGHT, M_ARMOR)
     p.box(0.06, 0.10, 0.12, 0.26, 0, 0.95, T_PACK, M_GEAR)
@@ -470,7 +493,7 @@ def build_character(materials, armature, mesh_collection):
     p.box(0.36, 0.15, 0.09, 0, 0.265, 1.625, T_ARMOR, M_ARMOR)
     p.box(0.09, 0.12, 0.22, 0.245, 0.26, 1.35, {"+X": T_TEAL, "all": T_PACK}, M_GEAR)
     p.box(0.09, 0.12, 0.22, -0.245, 0.26, 1.35, {"-X": T_TEAL, "all": T_PACK}, M_GEAR)
-    p.box(0.36, 0.13, 0.10, 0, 0.26, 1.11, T_TROUS, M_FABRIC)
+    p.box(0.36, 0.13, 0.10, 0, 0.26, 1.11, T_TROUSERS, M_FABRIC)
     for cx, cz in ((0.185, 1.585), (-0.185, 1.585), (0.185, 1.175), (-0.185, 1.175)):
         p.box(0.05, 0.17, 0.05, cx, 0.26, cz, T_ARMOR, M_ARMOR)
     p.box(0.04, 0.02, 0.04, 0.12, 0.345, 1.50, T_AMBER, M_GEAR)
