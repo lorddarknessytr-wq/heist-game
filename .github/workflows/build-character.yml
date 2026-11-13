@@ -1,0 +1,120 @@
+name: Build Night Courier Character
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Check Python indentation and syntax
+        run: python3 -m py_compile night_courier.py
+
+      - name: Install Blender 4.2.23 LTS
+        shell: bash
+        run: |
+          set -euo pipefail
+          BLENDER_VERSION="4.2.23"
+          ARCHIVE="blender-${BLENDER_VERSION}-linux-x64.tar.xz"
+          URL="https://download.blender.org/release/Blender4.2/${ARCHIVE}"
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl xz-utils libx11-6 libxi6 libxrender1 libxfixes3 \
+            libxext6 libxxf86vm1 libxkbcommon0 libsm6 libgl1 libegl1 \
+            libdbus-1-3 libfontconfig1
+          curl -fL --retry 3 "$URL" -o "$RUNNER_TEMP/$ARCHIVE"
+          mkdir -p "$RUNNER_TEMP/blender"
+          tar -xJf "$RUNNER_TEMP/$ARCHIVE" \
+            --strip-components=1 -C "$RUNNER_TEMP/blender"
+          echo "$RUNNER_TEMP/blender" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/blender/blender" --background --factory-startup \
+            --python-expr "import bpy; print('BLENDER_VERSION=' + bpy.app.version_string)"
+
+      - name: Generate character.glb
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/output"
+          blender --background --factory-startup \
+            --python night_courier.py -- "$GITHUB_WORKSPACE/output"
+
+      - name: Validate character GLB
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import pathlib
+          import struct
+
+          path = pathlib.Path("output/character.glb")
+          if not path.is_file() or path.stat().st_size < 20:
+              raise SystemExit("ERROR: output/character.glb is missing or empty")
+
+          data = path.read_bytes()
+          magic, version, total_length = struct.unpack_from("<4sII", data, 0)
+          if magic != b"glTF" or version != 2 or total_length != len(data):
+              raise SystemExit("ERROR: invalid GLB header/version/length")
+
+          json_length, json_type = struct.unpack_from("<I4s", data, 12)
+          if json_type != b"JSON":
+              raise SystemExit("ERROR: first GLB chunk is not JSON")
+          doc = json.loads(data[20:20 + json_length].decode("utf-8").rstrip("\x00 \t\r\n"))
+
+          if not doc.get("meshes"):
+              raise SystemExit("ERROR: GLB contains no meshes")
+          if not doc.get("materials"):
+              raise SystemExit("ERROR: GLB contains no materials")
+
+          skins = doc.get("skins", [])
+          if not skins:
+              raise SystemExit("ERROR: GLB contains no skin")
+          joint_count = len(skins[0].get("joints", []))
+          if joint_count != 20:
+              raise SystemExit(f"ERROR: expected 20 skin joints, found {joint_count}")
+
+          required = {"IDLE", "LOOK_AROUND", "WALK", "RUN", "TURN_LEFT", "TURN_RIGHT", "SOCIAL_WAVE"}
+          found = set()
+          for animation in doc.get("animations", []):
+              name = animation.get("name", "")
+              if not animation.get("channels"):
+                  continue
+              for clip in required:
+                  if name == clip or name.endswith(clip) or name.endswith("|" + clip):
+                      found.add(clip)
+          missing = required - found
+          if missing:
+              raise SystemExit("ERROR: missing animation clips: " + ", ".join(sorted(missing)))
+
+          embedded = sum(1 for image in doc.get("images", []) if "bufferView" in image)
+          if embedded < 2:
+              raise SystemExit(f"ERROR: expected at least 2 embedded images, found {embedded}")
+
+          has_skin_attributes = any(
+              "JOINTS_0" in primitive.get("attributes", {}) and
+              "WEIGHTS_0" in primitive.get("attributes", {})
+              for mesh in doc.get("meshes", [])
+              for primitive in mesh.get("primitives", [])
+          )
+          if not has_skin_attributes:
+              raise SystemExit("ERROR: no JOINTS_0 / WEIGHTS_0 attributes")
+
+          print(f"VALID CHARACTER GLB: {path.stat().st_size:,} bytes")
+          print(f"Meshes: {len(doc.get('meshes', []))} | Bones: {joint_count} | Animations: {len(found)} | Embedded images: {embedded}")
+          print("Animation names:", ", ".join(sorted(found)))
+          PY
+
+      - name: Upload character GLB
+        uses: actions/upload-artifact@v4
+        with:
+          name: night-courier-character-glb
+          path: output/character.glb
+          if-no-files-found: error
+          retention-days: 14
