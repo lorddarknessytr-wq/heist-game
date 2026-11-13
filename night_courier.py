@@ -1,5 +1,5 @@
 # =============================================================================
-# BLOCK HARBOR — THE NIGHT COURIER (corrected build)
+# BLOCK HARBOR — THE NIGHT COURIER (corrected build v3)
 # Blender 4.2 LTS | Output: character.glb
 # Procedural voxel character, 20-bone rig, pixel atlas, 7 animation clips.
 #
@@ -17,7 +17,7 @@ import random
 import tempfile
 import shutil
 import traceback
-from mathutils import Vector, Matrix, Quaternion
+from mathutils import Vector, Matrix, Quaternion, Euler
 
 # -----------------------------------------------------------------------------
 # Configuration
@@ -398,10 +398,34 @@ class PartBuilder:
         ]
         transform = Matrix.Translation((x, y, z))
         if rotation is not None:
-            transform = transform @ rotation
+            # Accept Blender 3x3/4x4 matrices, Euler angles, or quaternions.
+            # Matrix.Rotation(angle, 3, axis) returns a 3x3 matrix, while
+            # Matrix.Translation(...) is 4x4. Multiplying them directly raises
+            # the dimension-mismatch error reported by GitHub Actions.
+            if isinstance(rotation, Matrix):
+                if rotation.row_size == 3 and rotation.col_size == 3:
+                    rotation_4x4 = rotation.to_4x4()
+                elif rotation.row_size == 4 and rotation.col_size == 4:
+                    rotation_4x4 = rotation.copy()
+                else:
+                    fail(
+                        "PartBuilder.box rotation must be a 3x3 or 4x4 matrix; "
+                        "received %dx%d" % (rotation.row_size, rotation.col_size)
+                    )
+            elif isinstance(rotation, Euler):
+                rotation_4x4 = rotation.to_matrix().to_4x4()
+            elif isinstance(rotation, Quaternion):
+                rotation_4x4 = rotation.to_matrix().to_4x4()
+            else:
+                fail(
+                    "Unsupported rotation type for PartBuilder.box: %s" %
+                    type(rotation).__name__
+                )
+            transform = transform @ rotation_4x4
         base_index = len(self.vertices)
         for corner in corners:
-            self.vertices.append(tuple(transform @ Vector(corner)))
+            transformed = transform @ Vector(corner)
+            self.vertices.append((transformed.x, transformed.y, transformed.z))
         for face_index, face in enumerate(FACE_VERTICES):
             self.faces.append(tuple(base_index + i for i in face))
             tile_index, span = resolve_tile(tile_spec, FACE_KEYS[face_index])
@@ -483,8 +507,8 @@ def build_character(materials, armature, mesh_collection):
               {"-Y": T_PACK, "all": T_FABRIC}, M_FABRIC)
         p.box(0.14, 0.055, 0.03, side * 0.14, -0.185, 1.365, T_ARMOR, M_ARMOR)
         p.box(0.02, 0.20, 0.16, side * 0.29, 0, 1.40, T_TEAL, M_FABRIC)
-        p.box(0.07, 0.36, 0.05, side * 0.16, 0.02, 1.565, T_STRAP, M_GEAR,
-              Matrix.Rotation(0.10, 3, "X"))
+        p.box(0.07, 0.36, 0.05, side * 0.16, 0.02, 1.565,
+              T_STRAP, M_GEAR, rotation=Matrix.Rotation(0.10, 3, "X"))
     p.box(0.06, 0.02, 0.04, 0.38, -0.17, 1.54, T_AMBER, M_GEAR)
     p.box(0.03, 0.02, 0.05, 0, -0.175, 1.52, T_AMBER, M_GEAR)
     p.box(0.40, 0.02, 0.30, 0, 0.17, 1.42, T_PACK, M_GEAR)
