@@ -1,5 +1,5 @@
 # =============================================================================
-# BLOCK HARBOR — THE NIGHT COURIER (corrected build v3)
+# BLOCK HARBOR — THE NIGHT COURIER (corrected build v4)
 # Blender 4.2 LTS | Output: character.glb
 # Procedural voxel character, 20-bone rig, pixel atlas, 7 animation clips.
 #
@@ -403,14 +403,18 @@ class PartBuilder:
             # Matrix.Translation(...) is 4x4. Multiplying them directly raises
             # the dimension-mismatch error reported by GitHub Actions.
             if isinstance(rotation, Matrix):
-                if rotation.row_size == 3 and rotation.col_size == 3:
+                # Blender 4.2 mathutils.Matrix dimensions are queried with
+                # len(matrix) and len(matrix[0]), not legacy dimension properties.
+                row_count = len(rotation)
+                column_count = len(rotation[0]) if row_count else 0
+                if (row_count, column_count) == (3, 3):
                     rotation_4x4 = rotation.to_4x4()
-                elif rotation.row_size == 4 and rotation.col_size == 4:
+                elif (row_count, column_count) == (4, 4):
                     rotation_4x4 = rotation.copy()
                 else:
                     fail(
                         "PartBuilder.box rotation must be a 3x3 or 4x4 matrix; "
-                        "received %dx%d" % (rotation.row_size, rotation.col_size)
+                        "received %dx%d" % (row_count, column_count)
                     )
             elif isinstance(rotation, Euler):
                 rotation_4x4 = rotation.to_matrix().to_4x4()
