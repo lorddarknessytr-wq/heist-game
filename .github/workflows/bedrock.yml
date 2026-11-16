@@ -48,36 +48,45 @@ jobs:
 
           VERSION="1.20.30.02"
           ARCHIVE="/tmp/bedrock-server-${VERSION}.zip"
+          URL="https://www.minecraft.net/bedrockdedicatedserver/bin-linux/bedrock-server-${VERSION}.zip"
           DOWNLOADED=false
+          USER_AGENT="Mozilla/5.0 (X11; Linux x86_64)"
 
-          # Mojang's download path changed from azureedge.net to minecraft.net.
-          # Keep the old official URL as a fallback in case the new host has an outage.
-          URLS=(
-            "https://www.minecraft.net/bedrockdedicatedserver/bin-linux/bedrock-server-${VERSION}.zip"
-            "https://minecraft.azureedge.net/bin-linux/bedrock-server-${VERSION}.zip"
-          )
-
-          for url in "${URLS[@]}"; do
-            echo "Trying official Bedrock server download: ${url}"
+          # Mojang's CDN may reset curl requests that use curl's default User-Agent
+          # or HTTP/2. Use a browser-like User-Agent and try HTTP/1.1 first.
+          for protocol in http1.1 http2; do
+            echo "Trying official Bedrock download over ${protocol}: ${URL}"
             rm -f "$ARCHIVE"
-            if curl --fail --location --show-error \
-              --retry 3 --retry-all-errors --retry-delay 4 \
-              --connect-timeout 20 --max-time 900 \
-              "$url" --output "$ARCHIVE"; then
+
+            if [[ "$protocol" == "http1.1" ]]; then
+              protocol_args=(--http1.1)
+            else
+              protocol_args=(--http2)
+            fi
+
+            if curl "${protocol_args[@]}" \
+              --fail --location --show-error \
+              --user-agent "$USER_AGENT" \
+              --header 'Accept: */*' \
+              --referer 'https://www.minecraft.net/' \
+              --retry 2 --retry-all-errors --retry-delay 3 \
+              --connect-timeout 20 --max-time 1200 \
+              --output "$ARCHIVE" "$URL"; then
               if unzip -tq "$ARCHIVE" >/dev/null; then
                 DOWNLOADED=true
                 echo "Downloaded and verified Bedrock Dedicated Server ${VERSION}."
                 break
               fi
-              echo "The response from ${url} was not a valid ZIP archive; trying the next official URL."
+              echo "The download response was not a valid ZIP; trying the alternate HTTP protocol."
             else
-              echo "Download failed from ${url}; trying the next official URL."
+              echo "Download attempt over ${protocol} failed; trying the alternate HTTP protocol."
             fi
           done
 
           if [[ "$DOWNLOADED" != "true" ]]; then
             echo "ERROR: Could not download a valid official Bedrock Dedicated Server ${VERSION} archive."
-            echo "This can be caused by DNS/network issues on the GitHub runner or an unavailable upstream file."
+            echo "The official endpoint was reached unsuccessfully using a browser User-Agent over HTTP/1.1 and HTTP/2."
+            echo "If both attempts fail, the GitHub runner may be experiencing a network/CDN issue, or Mojang may no longer serve this archived build."
             exit 1
           fi
 
