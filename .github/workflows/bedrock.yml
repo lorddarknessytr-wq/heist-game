@@ -41,6 +41,21 @@ jobs:
             echo "WORLD_BACKUP_PASSWORD is set: encrypted world restore/backup is enabled."
           fi
 
+      - name: Report Bedrock connection requirements
+        run: |
+          set -euo pipefail
+          {
+            echo "## Bedrock connection information"
+            echo "- Server port: **UDP 19132** (from config/server.properties)."
+            if [[ -z "$PLAYIT_SECRET" ]]; then
+              echo "- Public address: **not created**. PLAYIT_SECRET is empty, so no public tunnel is running."
+              echo "- The GitHub runner's own public egress IP is not a joinable server address; GitHub-hosted runners do not provide an inbound game-server endpoint just by printing that IP."
+              echo "- To connect from outside the runner, configure a Bedrock/UDP tunnel in Playit and save its agent key as the repository Actions secret PLAYIT_SECRET."
+            else
+              echo "- Playit agent will be started. Check the Playit dashboard for the actual public host/IP and port; do not assume the public port is 19132."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Download Bedrock Dedicated Server 1.20.30.02
         run: |
           set -euo pipefail
@@ -127,7 +142,6 @@ jobs:
 
       - name: Start Playit agent (optional)
         if: ${{ env.PLAYIT_SECRET != '' }}
-        continue-on-error: true
         run: |
           set -euo pipefail
           docker run --detach \
@@ -136,8 +150,16 @@ jobs:
             --network host \
             --env SECRET_KEY="$PLAYIT_SECRET" \
             ghcr.io/playit-cloud/playit-agent:latest
-          sleep 8
-          echo "Playit agent process started. Check the Playit dashboard for tunnel status and address."
+          sleep 12
+          echo "Playit agent container status:"
+          docker ps --filter name=bedrock-playit --format 'table {{.Names}}\t{{.Status}}'
+          echo "Recent Playit agent log (check the Playit dashboard for the assigned public address):"
+          docker logs --tail 60 bedrock-playit 2>&1 || true
+          {
+            echo "## Playit agent"
+            echo "Agent container was launched. Confirm it is connected and that a Minecraft Bedrock UDP tunnel targets localhost:19132 in the Playit dashboard."
+            echo "Copy the exact public host/IP and port from that dashboard; the public port may differ from 19132."
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Run Bedrock server (maximum 5 hours 30 minutes)
         id: run_bedrock
