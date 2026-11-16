@@ -1,4 +1,4 @@
-name: Bedrock 1.20.30.02 - Solo Test
+name: Bedrock 1.20.30.02 - Optional Secrets Test
 
 on:
   workflow_dispatch:
@@ -15,25 +15,31 @@ jobs:
   server:
     runs-on: ubuntu-22.04
     timeout-minutes: 350
+    env:
+      PLAYIT_SECRET: ${{ secrets.PLAYIT_SECRET }}
+      WORLD_BACKUP_PASSWORD: ${{ secrets.WORLD_BACKUP_PASSWORD }}
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
 
-      - name: Check secrets and install tools
-        env:
-          MINECRAFT_GAMERTAG: ${{ secrets.MINECRAFT_GAMERTAG }}
-          PLAYIT_SECRET: ${{ secrets.PLAYIT_SECRET }}
-          WORLD_BACKUP_PASSWORD: ${{ secrets.WORLD_BACKUP_PASSWORD }}
+      - name: Install tools and check optional settings
         run: |
           set -euo pipefail
-          test -n "$MINECRAFT_GAMERTAG" || { echo "Missing repository secret: MINECRAFT_GAMERTAG"; exit 1; }
-          test -n "$PLAYIT_SECRET" || { echo "Missing repository secret: PLAYIT_SECRET"; exit 1; }
-          test -n "$WORLD_BACKUP_PASSWORD" || { echo "Missing repository secret: WORLD_BACKUP_PASSWORD"; exit 1; }
-          command -v docker >/dev/null
-          command -v gh >/dev/null
           sudo apt-get update -qq
-          sudo apt-get install -y unzip curl python3
+          sudo apt-get install -y unzip curl openssl
+
+          if [[ -z "$PLAYIT_SECRET" ]]; then
+            echo "PLAYIT_SECRET is not set: the Bedrock process will run, but no public Playit tunnel will be started."
+          else
+            echo "PLAYIT_SECRET is set: a Playit agent will be started."
+          fi
+
+          if [[ -z "$WORLD_BACKUP_PASSWORD" ]]; then
+            echo "WORLD_BACKUP_PASSWORD is not set: world restore/backup will be skipped. The world will be new on the next run."
+          else
+            echo "WORLD_BACKUP_PASSWORD is set: encrypted world restore/backup is enabled."
+          fi
 
       - name: Download Bedrock Dedicated Server 1.20.30.02
         run: |
@@ -46,10 +52,10 @@ jobs:
           cp config/server.properties server/server.properties
           chmod +x server/bedrock_server
 
-      - name: Restore the latest saved world
+      - name: Restore the latest saved world (optional)
+        if: ${{ env.WORLD_BACKUP_PASSWORD != '' }}
         env:
           GH_TOKEN: ${{ github.token }}
-          WORLD_BACKUP_PASSWORD: ${{ secrets.WORLD_BACKUP_PASSWORD }}
         run: |
           set -euo pipefail
           mkdir -p restore server
@@ -59,30 +65,26 @@ jobs:
             rm -rf restore/*
             if gh run download "$run_id" --name bedrock-world --dir restore >/dev/null 2>&1 \
               && [ -f restore/world.tar.gz.enc ]; then
-              openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 \
+              if openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 \
                 -in restore/world.tar.gz.enc \
                 -out restore/world.tar.gz \
-                -pass env:WORLD_BACKUP_PASSWORD
-              tar -xzf restore/world.tar.gz -C server
-              restored=true
-              echo "Restored the previous world backup."
-              break
+                -pass env:WORLD_BACKUP_PASSWORD 2>/dev/null \
+                && tar -tzf restore/world.tar.gz >/dev/null 2>&1; then
+                tar -xzf restore/world.tar.gz -C server
+                restored=true
+                echo "Restored the previous world backup."
+                break
+              fi
+              echo "Could not decrypt/validate backup from run ${run_id}; checking an older run."
             fi
           done
           if [ "$restored" = false ]; then
-            echo "No earlier backup found; BDS will generate a new flat world."
+            echo "No usable earlier backup found; BDS will generate a new flat world."
           fi
 
-      - name: Create the private allowlist
-        env:
-          MINECRAFT_GAMERTAG: ${{ secrets.MINECRAFT_GAMERTAG }}
-        run: |
-          set -euo pipefail
-          python3 scripts/create_allowlist.py server/allowlist.json
-
-      - name: Start Playit agent
-        env:
-          PLAYIT_SECRET: ${{ secrets.PLAYIT_SECRET }}
+      - name: Start Playit agent (optional)
+        if: ${{ env.PLAYIT_SECRET != '' }}
+        continue-on-error: true
         run: |
           set -euo pipefail
           docker run --detach \
@@ -117,14 +119,16 @@ jobs:
         if: always()
         run: docker rm --force bedrock-playit >/dev/null 2>&1 || true
 
-      - name: Encrypt world backup
+      - name: Encrypt world backup (optional)
+        id: backup_world
         if: always()
-        env:
-          WORLD_BACKUP_PASSWORD: ${{ secrets.WORLD_BACKUP_PASSWORD }}
         run: |
           set -euo pipefail
           mkdir -p out
-          if [ -d server/worlds/FlatTestWorld ]; then
+          if [[ -z "$WORLD_BACKUP_PASSWORD" ]]; then
+            echo "No backup password: skipping backup to avoid publishing an unencrypted world."
+            echo "created=false" >> "$GITHUB_OUTPUT"
+          elif [ -d server/worlds/FlatTestWorld ]; then
             tar -czf out/world.tar.gz -C server worlds/FlatTestWorld
             openssl enc -aes-256-cbc -salt -pbkdf2 -iter 200000 \
               -in out/world.tar.gz \
@@ -132,17 +136,19 @@ jobs:
               -pass env:WORLD_BACKUP_PASSWORD
             rm -f out/world.tar.gz
             echo "Encrypted world backup created."
+            echo "created=true" >> "$GITHUB_OUTPUT"
           else
             echo "No world folder exists; no backup was created."
+            echo "created=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Upload encrypted world backup
-        if: always()
+        if: always() && steps.backup_world.outputs.created == 'true'
         uses: actions/upload-artifact@v7
         with:
           name: bedrock-world
           path: out/world.tar.gz.enc
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 90
 
       - name: Report unexpected server exit
