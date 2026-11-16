@@ -127,13 +127,20 @@ jobs:
             printf '%s\n' "$agent_log" | tail -n 35
             exit 1
           fi
-          tunnel_count="$(grep -oE 'tunnel_count=[0-9]+' <<<"$agent_log" | tail -n 1 | cut -d= -f2 || true)"
-          if [[ -n "$tunnel_count" && "$tunnel_count" == "0" ]]; then
-            echo "ERROR: Playit agent is connected, but no tunnel is assigned to this agent. Check the tunnel's Agent selection in Playit."
+          # Match the exact whitespace-delimited field `tunnel_count=...`.
+          # A loose grep also matches `pending_tunnel_count` and
+          # `disabled_tunnel_count`, which previously caused false failures.
+          tunnel_count="$(awk '{for (i=1; i<=NF; i++) if ($i ~ /^tunnel_count=[0-9]+$/) {v=$i; sub(/^tunnel_count=/, "", v)}} END {if (v != "") print v}' <<<"$agent_log")"
+          if [[ -z "$tunnel_count" ]]; then
+            echo "WARNING: Playit connected, but its tunnel count was not present in the captured log. Continuing; verify the tunnel in the Playit dashboard."
+          elif [[ "$tunnel_count" == "0" ]]; then
+            echo "ERROR: Playit agent is connected, but it reports zero assigned tunnels. Check the tunnel's Agent selection in Playit."
             printf '%s\n' "$agent_log" | tail -n 35
             exit 1
+          else
+            echo "Playit agent is connected and reports ${tunnel_count} assigned tunnel(s)."
           fi
-          echo "Playit agent is connected. Secret values are not printed."
+          echo "Secret values are not printed."
 
       - name: Run Bedrock server (maximum 5 hours 30 minutes)
         run: |
