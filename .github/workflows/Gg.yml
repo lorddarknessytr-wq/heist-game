@@ -1,0 +1,77 @@
+name: Watch Aparat Short Video
+
+on:
+  workflow_dispatch:
+    inputs:
+      video_url:
+        description: 'لینک ویدیوی کوتاه آپارات (مثال: https://www.aparat.com/v/xxxxx)'
+        required: true
+        type: string
+
+jobs:
+  watch_video:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10 # حداکثر زمان برای کل جاب (برای ویدیوهای کوتاه کافی است)
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Playwright
+        run: |
+          npm init -y
+          npm install playwright
+          npx playwright install chromium --with-deps
+
+      - name: Open Aparat video and wait until ended
+        run: |
+          cat > watch-video.js << 'EOF'
+          const { chromium } = require('playwright');
+
+          (async () => {
+            const videoUrl = process.env.VIDEO_URL;
+            console.log(`Opening: ${videoUrl}`);
+
+            const browser = await chromium.launch({ headless: true });
+            const page = await browser.newPage();
+
+            await page.goto(videoUrl, { waitUntil: 'networkidle', timeout: 60000 });
+            console.log('Page loaded. Looking for <video> element...');
+
+            // منتظر می‌مانیم تا المان <video> در صفحه ظاهر شود
+            const video = await page.waitForSelector('video', { timeout: 30000 });
+            console.log('Video element found.');
+
+            // از داخل صفحه، وضعیت پخش را کنترل می‌کنیم
+            await page.evaluate(() => {
+              const v = document.querySelector('video');
+              if (v.paused) {
+                v.play().catch(e => console.log('Autoplay blocked:', e.message));
+              }
+            });
+
+            console.log('Waiting for video to finish...');
+
+            // مهم‌ترین بخش: منتظر رویداد `ended` می‌مانیم
+            await page.evaluate(() => {
+              return new Promise((resolve) => {
+                const v = document.querySelector('video');
+                if (v.ended) {
+                  resolve();
+                } else {
+                  v.addEventListener('ended', () => resolve(), { once: true });
+                }
+              });
+            });
+
+            console.log('✅ Video finished. Closing browser.');
+            await browser.close();
+          })();
+          EOF
+          node watch-video.js
+        env:
+          VIDEO_URL: ${{ inputs.video_url }}
