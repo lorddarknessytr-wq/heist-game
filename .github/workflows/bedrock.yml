@@ -1,4 +1,4 @@
-name: Bedrock 1.20.30.02 - Playit Direct UDP
+name: Minecraft Java 1.8.9 - Playit TCP
 
 on:
   workflow_dispatch:
@@ -8,7 +8,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: bedrock-solo-test
+  group: minecraft-java-189-solo-test
   cancel-in-progress: false
 
 jobs:
@@ -18,67 +18,79 @@ jobs:
     env:
       PLAYIT_SECRET: ${{ secrets.PLAYIT_SECRET }}
       WORLD_BACKUP_PASSWORD: ${{ secrets.WORLD_BACKUP_PASSWORD }}
-      PLAYIT_PUBLIC_HOST: molecule-porter.tun.ply.gg
-      PLAYIT_PUBLIC_PORT: '5536'
-      PLAYIT_PUBLIC_IP: 147.185.221.216
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
 
-      - name: Install tools and validate Playit secret
+      - name: Set up Java 8
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '8'
+
+      - name: Validate settings and Playit secret
+        shell: bash
         run: |
           set -euo pipefail
-          sudo apt-get update -qq
-          sudo apt-get install -y unzip curl openssl
           if [[ -z "$PLAYIT_SECRET" ]]; then
-            echo "ERROR: Add PLAYIT_SECRET under Settings > Secrets and variables > Actions."
+            echo "ERROR: Add the existing PLAYIT_SECRET under Settings > Secrets and variables > Actions."
             exit 1
           fi
+          if ! grep -Eq '^[[:space:]]*eula=true[[:space:]]*$' eula.txt; then
+            echo "ERROR: Read the Minecraft EULA, then change eula=false to eula=true in the repository's eula.txt and commit it."
+            exit 1
+          fi
+          java -version
           echo "PLAYIT_SECRET is present. Secret values are not printed."
           if [[ -z "$WORLD_BACKUP_PASSWORD" ]]; then
             echo "WORLD_BACKUP_PASSWORD is absent: encrypted world backup/restore is disabled."
           else
-            echo "Encrypted world backup/restore is enabled."
+            echo "Encrypted Java world backup/restore is enabled."
           fi
 
-      - name: Download Bedrock Dedicated Server 1.20.30.02
+      - name: Download official Minecraft Java server 1.8.9
+        shell: bash
         run: |
           set -euo pipefail
           mkdir -p server
-          VERSION="1.20.30.02"
-          ARCHIVE="/tmp/bedrock-server-${VERSION}.zip"
-          URL="https://www.minecraft.net/bedrockdedicatedserver/bin-linux/bedrock-server-${VERSION}.zip"
-          USER_AGENT="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0 Safari/537.36"
 
-          rm -f "$ARCHIVE"
-          curl --http1.1 \
-            --fail --location --show-error \
-            --user-agent "$USER_AGENT" \
-            --header 'Accept: */*' \
-            --referer 'https://www.minecraft.net/' \
+          SERVER_URL="https://launcher.mojang.com/mc/game/1.8.9/server/b58b2ceb36e01bcd8dbf49c8fb66c55a9f0676cd/server.jar"
+          SERVER_SHA1="b58b2ceb36e01bcd8dbf49c8fb66c55a9f0676cd"
+          SERVER_JAR="server/server.jar"
+
+          curl --http1.1 --fail --location --show-error \
             --retry 4 --retry-all-errors --retry-delay 4 \
             --connect-timeout 20 --max-time 1200 \
-            --output "$ARCHIVE" "$URL"
-
-          if ! unzip -tq "$ARCHIVE" >/dev/null; then
-            echo "ERROR: Downloaded file is not a valid Bedrock server ZIP archive."
+            --output "$SERVER_JAR" "$SERVER_URL"
+          echo "$SERVER_SHA1  $SERVER_JAR" | sha1sum --check --status || {
+            echo "ERROR: The downloaded Minecraft 1.8.9 server JAR failed its SHA-1 check."
             exit 1
-          fi
-          unzip -q "$ARCHIVE" -d server
-          test -f server/bedrock_server || { echo "ERROR: bedrock_server not found in archive."; exit 1; }
+          }
+
+          # Mojang's official Log4j mitigation for Minecraft versions 1.7–1.11.2.
+          LOG4J_URL="https://launcher.mojang.com/v1/objects/4bb89a97a66f350bc9f73b3ca8509632682aea2e/log4j2_17-111.xml"
+          LOG4J_SHA1="4bb89a97a66f350bc9f73b3ca8509632682aea2e"
+          curl --http1.1 --fail --location --show-error \
+            --retry 4 --retry-all-errors --retry-delay 4 \
+            --connect-timeout 20 --max-time 120 \
+            --output "server/log4j2_17-111.xml" "$LOG4J_URL"
+          echo "$LOG4J_SHA1  server/log4j2_17-111.xml" | sha1sum --check --status || {
+            echo "ERROR: Mojang's Log4j mitigation file failed its SHA-1 check."
+            exit 1
+          }
+
           cp config/server.properties server/server.properties
-          chmod +x server/bedrock_server
+          cp eula.txt server/eula.txt
+          test -s server/server.jar
+          test -s server/log4j2_17-111.xml
+          echo "Verified official Minecraft Java 1.8.9 server JAR and Mojang Log4j mitigation file."
 
-          # This workflow uses the regular Bedrock UDP tunnel (RakNet),
-          # forwarding Playit to the local BDS listener on UDP 19132.
-          sed -i 's/^server-port=.*/server-port=19132/' server/server.properties
-          sed -i 's/^server-portv6=.*/server-portv6=19133/' server/server.properties
-
-      - name: Restore latest saved world (optional)
+      - name: Restore latest saved Java world (optional)
         if: ${{ env.WORLD_BACKUP_PASSWORD != '' }}
         env:
           GH_TOKEN: ${{ github.token }}
+        shell: bash
         run: |
           set -euo pipefail
           mkdir -p restore server
@@ -86,7 +98,7 @@ jobs:
           restored=false
           for run_id in "${run_ids[@]}"; do
             rm -rf restore/*
-            if gh run download "$run_id" --name bedrock-world --dir restore >/dev/null 2>&1 \
+            if gh run download "$run_id" --name java189-world --dir restore >/dev/null 2>&1 \
               && [ -f restore/world.tar.gz.enc ]; then
               if openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 \
                 -in restore/world.tar.gz.enc \
@@ -95,29 +107,30 @@ jobs:
                 && tar -tzf restore/world.tar.gz >/dev/null 2>&1; then
                 tar -xzf restore/world.tar.gz -C server
                 restored=true
-                echo "Restored the previous world backup."
+                echo "Restored the previous Java world backup."
                 break
               fi
-              echo "Could not decrypt/validate backup from run ${run_id}; checking an older run."
+              echo "Could not decrypt/validate Java backup from run ${run_id}; checking an older run."
             fi
           done
           if [ "$restored" = false ]; then
-            echo "No usable earlier backup found; BDS will generate a new flat world."
+            echo "No usable Java world backup found; a new flat world will be generated."
           fi
 
       - name: Start Playit agent
+        shell: bash
         run: |
           set -euo pipefail
-          docker rm --force bedrock-playit >/dev/null 2>&1 || true
+          docker rm --force minecraft-playit >/dev/null 2>&1 || true
           docker run --detach \
-            --name bedrock-playit \
+            --name minecraft-playit \
             --restart=no \
             --network host \
             --env SECRET_KEY="$PLAYIT_SECRET" \
             ghcr.io/playit-cloud/playit-agent:latest
 
           sleep 15
-          agent_log="$(docker logs --tail 100 bedrock-playit 2>&1 || true)"
+          agent_log="$(docker logs --tail 100 minecraft-playit 2>&1 || true)"
           if grep -q 'email_not_verified' <<<"$agent_log"; then
             echo "ERROR: Verify the email address on your Playit account, then run this workflow again."
             exit 1
@@ -127,14 +140,12 @@ jobs:
             printf '%s\n' "$agent_log" | tail -n 35
             exit 1
           fi
-          # Match the exact whitespace-delimited field `tunnel_count=...`.
-          # A loose grep also matches `pending_tunnel_count` and
-          # `disabled_tunnel_count`, which previously caused false failures.
+          # Match only the exact field; do not accidentally read pending/disabled counts.
           tunnel_count="$(awk '{for (i=1; i<=NF; i++) if ($i ~ /^tunnel_count=[0-9]+$/) {v=$i; sub(/^tunnel_count=/, "", v)}} END {if (v != "") print v}' <<<"$agent_log")"
           if [[ -z "$tunnel_count" ]]; then
-            echo "WARNING: Playit connected, but its tunnel count was not present in the captured log. Continuing; verify the tunnel in the Playit dashboard."
+            echo "WARNING: Playit connected, but tunnel_count was not present in the captured log. Check the Playit dashboard."
           elif [[ "$tunnel_count" == "0" ]]; then
-            echo "ERROR: Playit agent is connected, but it reports zero assigned tunnels. Check the tunnel's Agent selection in Playit."
+            echo "ERROR: Playit is connected, but no tunnel is assigned to this agent. Assign the Minecraft Java tunnel to this agent."
             printf '%s\n' "$agent_log" | tail -n 35
             exit 1
           else
@@ -142,72 +153,76 @@ jobs:
           fi
           echo "Secret values are not printed."
 
-      - name: Run Bedrock server (maximum 5 hours 30 minutes)
+      - name: Run Minecraft Java server 1.8.9 (maximum 5 hours 30 minutes)
+        shell: bash
         run: |
           set -euo pipefail
           {
-            echo "## Minecraft Bedrock connection"
-            echo "- Server address: **${PLAYIT_PUBLIC_HOST}**"
-            echo "- Port: **${PLAYIT_PUBLIC_PORT}/UDP**"
-            echo "- Alternative IP: **${PLAYIT_PUBLIC_IP}:${PLAYIT_PUBLIC_PORT}**"
-            echo "- Playit local target must be **127.0.0.1:19132/UDP**."
-            echo "- Use a regular **Minecraft Bedrock** or UDP tunnel, not **Minecraft Bedrock (NetherNet)** for this direct RakNet setup."
-            echo "- Session limit: **5 hours 30 minutes**."
+            echo "## Minecraft Java Edition 1.8.9"
+            echo "- Edition/version: **Java Edition 1.8.9**"
+            echo "- Playit tunnel: **Minecraft Java (TCP)**"
+            echo "- Local target: **127.0.0.1:25565/TCP**"
+            echo "- Public hostname/port: **Use the current address displayed by the Playit dashboard**"
+            echo "- World: **FlatTestWorld (flat)**"
+            echo "- Max players: **1**"
+            echo "- Session limit: **5 hours 30 minutes**"
           } >> "$GITHUB_STEP_SUMMARY"
 
-          echo "Starting Bedrock Dedicated Server 1.20.30.02..."
-          echo "Public endpoint: ${PLAYIT_PUBLIC_HOST}:${PLAYIT_PUBLIC_PORT}"
-          echo "Playit local target: 127.0.0.1:19132/UDP"
+          echo "Starting Minecraft Java server 1.8.9..."
+          echo "Playit Java tunnel must target 127.0.0.1:25565/TCP."
 
           set +e
           cd server
           timeout --signal=INT --kill-after=30s 330m \
-            env LD_LIBRARY_PATH=. ./bedrock_server > ../server.log 2>&1
+            java -Xms512M -Xmx2G \
+              -Dlog4j.configurationFile=log4j2_17-111.xml \
+              -jar server.jar nogui > ../server.log 2>&1
           server_code=$?
           cd ..
           set -e
           printf '%s\n' "$server_code" > server-exit-code.txt
           if [[ "$server_code" -eq 124 || "$server_code" -eq 130 ]]; then
-            echo "The planned server session ended."
+            echo "The planned Java server session ended."
           elif [[ "$server_code" -eq 0 ]]; then
-            echo "The server stopped normally."
+            echo "The Java server stopped normally."
           else
-            echo "ERROR: Bedrock server exited unexpectedly (code ${server_code}). Its detailed log is not printed because this repository is public."
+            echo "ERROR: Minecraft Java server exited unexpectedly (code ${server_code}). Detailed logs are not published because this repository is public."
             exit 1
           fi
 
       - name: Stop Playit agent
         if: always()
-        run: docker rm --force bedrock-playit >/dev/null 2>&1 || true
+        run: docker rm --force minecraft-playit >/dev/null 2>&1 || true
 
-      - name: Encrypt world backup (optional)
+      - name: Encrypt Java world backup (optional)
         id: backup_world
         if: always()
+        shell: bash
         run: |
           set -euo pipefail
           mkdir -p out
           if [[ -z "$WORLD_BACKUP_PASSWORD" ]]; then
             echo "No backup password: skipping backup to avoid publishing an unencrypted world."
             echo "created=false" >> "$GITHUB_OUTPUT"
-          elif [ -d server/worlds/FlatTestWorld ]; then
-            tar -czf out/world.tar.gz -C server worlds/FlatTestWorld
+          elif [ -d server/FlatTestWorld ]; then
+            tar -czf out/world.tar.gz -C server FlatTestWorld
             openssl enc -aes-256-cbc -salt -pbkdf2 -iter 200000 \
               -in out/world.tar.gz \
               -out out/world.tar.gz.enc \
               -pass env:WORLD_BACKUP_PASSWORD
             rm -f out/world.tar.gz
-            echo "Encrypted world backup created."
+            echo "Encrypted Java world backup created."
             echo "created=true" >> "$GITHUB_OUTPUT"
           else
-            echo "No world folder exists; no backup was created."
+            echo "No Java world folder exists; no backup was created."
             echo "created=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Upload encrypted world backup
+      - name: Upload encrypted Java world backup
         if: always() && steps.backup_world.outputs.created == 'true'
         uses: actions/upload-artifact@v7
         with:
-          name: bedrock-world
+          name: java189-world
           path: out/world.tar.gz.enc
           if-no-files-found: error
           retention-days: 90
