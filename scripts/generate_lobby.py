@@ -1,7 +1,23 @@
 # Blender background script: generate a compact, static, procedural cargo-ship lobby.
 # Run: blender -b --python scripts/generate_lobby.py -- --output build/lobby.glb
-import bpy, math, random, os, sys
+import bpy, math, random, os, sys, traceback
 from mathutils import Vector, Matrix
+
+# A fresh CI profile (especially with --factory-startup) may not have the
+# bundled glTF 2.0 exporter enabled. Enable it explicitly before using the op.
+try:
+    import addon_utils
+    addon_utils.enable("io_scene_gltf2", default_set=True, persistent=True)
+except Exception:
+    traceback.print_exc()
+
+if not hasattr(bpy.ops, "export_scene") or not hasattr(bpy.ops.export_scene, "gltf"):
+    raise RuntimeError(
+        "Blender glTF 2.0 exporter is unavailable. The io_scene_gltf2 add-on could not be enabled."
+    )
+
+print("Blender version:", bpy.app.version_string, flush=True)
+print("glTF 2.0 exporter: enabled", flush=True)
 
 random.seed(23)
 
@@ -222,7 +238,8 @@ assign(bpy.context.object,white)
 # Export only the authored environment meshes. Lights/camera remain in scene only if added later.
 bpy.ops.object.select_all(action="SELECT")
 bpy.context.view_layer.objects.active = bpy.context.selected_objects[0] if bpy.context.selected_objects else None
-bpy.ops.export_scene.gltf(
+print("Exporting GLB to:", OUT, flush=True)
+export_result = bpy.ops.export_scene.gltf(
     filepath=OUT,
     export_format="GLB",
     use_selection=True,
@@ -234,4 +251,9 @@ bpy.ops.export_scene.gltf(
     export_cameras=False,
     export_lights=False,
 )
-print("WROTE_GL B:", OUT)
+print("Exporter result:", export_result, flush=True)
+if "FINISHED" not in export_result:
+    raise RuntimeError("glTF exporter did not finish successfully: %r" % (export_result,))
+if not os.path.isfile(OUT) or os.path.getsize(OUT) <= 20:
+    raise RuntimeError("Exporter returned without producing a non-empty GLB: " + OUT)
+print("WROTE_GL B:", OUT, "size:", os.path.getsize(OUT), "bytes", flush=True)
