@@ -1,0 +1,41 @@
+name: Build procedural lobby GLB
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "scripts/generate_lobby.py"
+      - ".github/workflows/build-lobby-glb.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Blender
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y blender
+
+      - name: Generate lobby.glb
+        run: |
+          mkdir -p build
+          blender --background --factory-startup --python scripts/generate_lobby.py -- --output build/lobby.glb
+
+      - name: Verify output
+        run: |
+          test -s build/lobby.glb
+          ls -lh build/lobby.glb
+
+      - name: Upload GLB artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: block-harbor-lobby-glb
+          path: build/lobby.glb
+          if-no-files-found: error
+          retention-days: 14
