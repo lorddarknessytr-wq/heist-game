@@ -13,35 +13,74 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-22.04
+    timeout-minutes: 30
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install Blender
+      # Use the official portable Blender build instead of Ubuntu's apt package.
+      # The distro package can ship a glTF exporter whose Python dependencies
+      # do not match the Blender-bundled Python environment.
+      - name: Cache official Blender
+        id: blender-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.tool_cache }}/blender-4.5.16
+          key: blender-4.5.16-linux-x64
+
+      - name: Download official Blender 4.5.16 LTS
+        if: steps.blender-cache.outputs.cache-hit != 'true'
+        shell: bash
         run: |
-          set -euxo pipefail
-          sudo apt-get update
-          sudo apt-get install -y blender
-          blender --version
+          set -euo pipefail
+          BLENDER_URL="https://download.blender.org/release/Blender4.5/blender-4.5.16-linux-x64.tar.xz"
+          ARCHIVE="$RUNNER_TEMP/blender-4.5.16-linux-x64.tar.xz"
+          curl --fail --location --retry 3 --retry-delay 2 "$BLENDER_URL" --output "$ARCHIVE"
+          BLENDER_DIR="$RUNNER_TOOL_CACHE/blender-4.5.16"
+          mkdir -p "$BLENDER_DIR"
+          tar -xJf "$ARCHIVE" --directory "$BLENDER_DIR" --strip-components=1
+
+      - name: Check Blender and glTF exporter dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          BLENDER="$RUNNER_TOOL_CACHE/blender-4.5.16/blender"
+          test -x "$BLENDER"
+          "$BLENDER" --version | head -n 3
+          "$BLENDER" --background --factory-startup --python-expr \
+            "import bpy, numpy, addon_utils; addon_utils.enable('io_scene_gltf2', default_set=False); assert hasattr(bpy.ops.export_scene, 'gltf'), 'glTF exporter operator missing'; print('NUMPY_OK', numpy.__version__); print('GLTF_EXPORTER_OK')"
+          echo "$RUNNER_TOOL_CACHE/blender-4.5.16" >> "$GITHUB_PATH"
 
       - name: Generate lobby.glb
+        shell: bash
         run: |
-          set -euxo pipefail
+          set -euo pipefail
           echo "Repository: $PWD"
           test -f scripts/generate_lobby.py
           mkdir -p build
-          blender --background --factory-startup --python scripts/generate_lobby.py -- --output "$PWD/build/lobby.glb"
-          # Blender can occasionally print a Python traceback while its process
-          # still returns success; check the artifact immediately in this step.
+          # Keep verbose Blender output in a file. On failure, show only the tail
+          # so the real Python exception is visible without thousands of log lines.
+          if ! "$RUNNER_TOOL_CACHE/blender-4.5.16/blender" --background --factory-startup \
+              --python scripts/generate_lobby.py -- --output "$PWD/build/lobby.glb" \
+              > build/blender-export.log 2>&1; then
+            echo "Blender failed. Last 120 log lines:"
+            tail -n 120 build/blender-export.log
+            exit 1
+          fi
           test -s build/lobby.glb
-          echo "Files produced in build/:"
-          ls -lah build/
+          echo "Generated GLB:"
+          ls -lh build/lobby.glb
+          echo "Blender log tail:"
+          tail -n 25 build/blender-export.log
 
       - name: Verify output
+        shell: bash
         run: |
-          set -euxo pipefail
+          set -euo pipefail
           test -f build/lobby.glb
           test -s build/lobby.glb
+          FILE_SIZE=$(stat -c '%s' build/lobby.glb)
+          echo "Verified build/lobby.glb ($FILE_SIZE bytes)"
           ls -lh build/lobby.glb
 
       - name: Upload GLB artifact
@@ -51,3 +90,12 @@ jobs:
           path: build/lobby.glb
           if-no-files-found: error
           retention-days: 14
+
+      - name: Upload Blender diagnostic log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: blender-build-diagnostic
+          path: build/blender-export.log
+          if-no-files-found: ignore
+          retention-days: 7
