@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """Remaster the raw Shipment GLB into a war-atmosphere lobby (assets/lobby.glb).
 Reads environment.glb / environment.txt (real GLB bytes), keeps geometry,
-re-grades + re-materials everything, merges for mobile, adds hero props.
-Pure python: numpy + pillow + trimesh(export only)."""
+re-grades + re-materials everything, merges for mobile, adds hero props."""
 import argparse, io, json, math, os, struct
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 import trimesh
 from trimesh.visual.material import PBRMaterial
+
+RESAMPLE = getattr(Image, "Resampling", Image).BICUBIC
 
 # ---------------- GLB reader ----------------
 def load_glb(path):
@@ -36,9 +37,6 @@ def accessor(js, bin_, i):
     return out
 
 def node_worlds(js):
-    parents = {}
-    for ni, n in enumerate(js.get('nodes', [])):
-        for c in n.get('children', []): parents[c] = ni
     worlds = {}
     def rec(ni, pm):
         n = js['nodes'][ni]
@@ -56,7 +54,6 @@ def read_primitives(js, bin_):
     for ni, n in enumerate(js.get('nodes', [])):
         if 'mesh' not in n: continue
         W = worlds.get(ni, np.eye(4))
-        N = np.linalg.inv(W[:3, :3]).T
         for p in js['meshes'][n['mesh']]['primitives']:
             pos = accessor(js, bin_, p['attributes']['POSITION'])[:, :3]
             pw = (W @ np.hstack([pos, np.ones((len(pos), 1))]).T).T[:, :3]
@@ -69,7 +66,7 @@ def read_primitives(js, bin_):
 def source_images(js, bin_):
     imgs = {}
     for ti, t in enumerate(js.get('textures', [])):
-        si = t.get('source'); 
+        si = t.get('source')
         if si is None: continue
         im = js['images'][si]
         if 'bufferView' in im:
@@ -79,22 +76,24 @@ def source_images(js, bin_):
             except Exception: pass
     return imgs
 
-# ---------------- procedural texture helpers ----------------
+# ---------------- procedural textures ----------------
 def tnoise(size, cells, seed):
     r = np.random.default_rng(seed)
-    g = r.random((cells + 1, cells + 1)); g[-1, :] = g[0, :]; g[:, -1] = g[:, 0]
-    x = np.linspace(0, cells, size, endpoint=False)
-    x0 = np.floor(x).astype(int); fx = x - x0
-    y = x[:, None]; y0 = np.floor(y).astype(int); fy = y - y0
-    fx = fx[None, :]; fy = fy[:, None]
+    g = r.random((cells + 1, cells + 1))
+    g[-1, :] = g[0, :]; g[:, -1] = g[:, 0]
+    t = np.linspace(0, cells, size, endpoint=False)
+    i0 = np.floor(t).astype(int)
+    f = t - i0
+    fx = f[None, :]; fy = f[:, None]
+    x0 = i0[None, :]; y0 = i0[:, None]
     a = g[y0, x0]; b = g[y0, x0 + 1]; c = g[y0 + 1, x0]; d = g[y0 + 1, x0 + 1]
     return (a * (1 - fx) + b * fx) * (1 - fy) + (c * (1 - fx) + d * fx) * fy
 
 def fbm(size, seed, octaves=4):
-    s = np.zeros((size, size)); amp = .5; cells = 4
+    s = np.zeros((size, size), np.float32); amp = .5; cells = 4
     for o in range(octaves):
         s += amp * tnoise(size, cells, seed + o * 7); amp *= .5; cells *= 2
-    return s / s.max()
+    return s / max(1e-6, float(s.max()))
 
 def grade(arr, sat=.86, con=1.12, bri=.96):
     a = arr.astype(np.float32) / 255.
@@ -103,9 +102,9 @@ def grade(arr, sat=.86, con=1.12, bri=.96):
     a = (a - .5) * con + .5
     a *= bri
     sh = np.clip(1 - lum, 0, 1)[..., None]
-    a += sh * np.array([-.02, .0, .045], np.float32)      # cool shadows
+    a += sh * np.array([-.02, .0, .045], np.float32)
     hi = np.clip(lum - .55, 0, 1)[..., None]
-    a += hi * np.array([.05, .03, .0], np.float32)        # warm highlights
+    a += hi * np.array([.05, .03, .0], np.float32)
     return np.clip(a * 255, 0, 255).astype(np.uint8)
 
 def normal_from(arr, strength=1.6):
@@ -130,7 +129,7 @@ def font(sz):
         if os.path.exists(p): return ImageFont.truetype(p, sz)
     return ImageFont.load_default()
 
-def container_tex(target, label, seed, detail=None, size=1024):
+def container_tex(target, label, seed, detail=None, size=512):
     t = np.array(target, np.float32) / 255.
     n = fbm(size, seed, 4)
     base = np.ones((size, size, 3), np.float32) * t
@@ -142,15 +141,15 @@ def container_tex(target, label, seed, detail=None, size=1024):
     rail[:int(size * .05)] = 1; rail[int(size * .95):] = 1
     base *= (1 - .4 * rail)[:, None, None]
     rust = np.clip((fbm(size, seed + 3, 4) - .58) * 3, 0, 1)
-    vgrad = np.linspace(0, 1, size)[:, None] ** 1.4
-    rust *= vgrad
+    rust *= np.linspace(0, 1, size)[:, None] ** 1.4
     base = base * (1 - rust[..., None]) + (np.array([96, 52, 30]) / 255.) * rust[..., None]
     if detail is not None:
         d = np.array(detail.resize((size, size))).astype(np.float32) @ np.array([.299, .587, .114], np.float32) / 255.
         base *= (.55 + .6 * d)[..., None]
     img = Image.fromarray(grade(np.clip(base * 255, 0, 255).astype(np.uint8)))
     d = ImageDraw.Draw(img, 'RGBA')
-    d.text((size * .06, size * .78), label, font=font(int(size * .13)), fill=(225, 232, 236, 120))
+    if label:
+        d.text((size * .06, size * .78), label, font=font(int(size * .13)), fill=(225, 232, 236, 120))
     d.rectangle([size * .08, size * .12, size * .2, size * .24], fill=(216, 182, 42, 230))
     d.text((size * .09, size * .13), "2,6m", font=font(int(size * .05)), fill=(20, 18, 10, 255))
     d.rectangle([size * .08, size * .3, size * .15, size * .37], fill=(176, 48, 40, 230))
@@ -189,17 +188,28 @@ def metal_tex(seed, size=512):
     return Image.fromarray(grade(np.clip(base, 0, 255).astype(np.uint8), sat=.7, con=1.15))
 
 def walkway_tex(size=1024):
-    im = Image.new('RGBA', (size, size), (0, 0, 0, 0)); d = ImageDraw.Draw(im)
+    im = Image.new('RGBA', (size, size), (0, 0, 0, 0))
     band = Image.new('RGBA', (size * 3, int(size * .26)), (0, 0, 0, 0)); bd = ImageDraw.Draw(band)
     h = band.height
     bd.rectangle([0, int(h * .1), size * 3, int(h * .9)], fill=(16, 21, 29, 235))
     bd.rectangle([0, 0, size * 3, int(h * .08)], fill=(176, 138, 30, 235))
     bd.rectangle([0, int(h * .92), size * 3, h], fill=(176, 138, 30, 235))
-    band = band.rotate(22, expand=True, resample=Image.BICUBIC)
+    band = band.rotate(22, expand=True, resample=RESAMPLE)
     im.paste(band, ((size - band.width) // 2, (size - band.height) // 2), band)
     return im
 
-# ---------------- geometry helpers ----------------
+def mat_for(img, rough, metal, seed, normal_strength=None):
+    nrm = None
+    if normal_strength:
+        small = np.array(img.resize((max(64, img.width // 2), max(64, img.height // 2))))
+        nrm = normal_from(small, normal_strength)
+    return PBRMaterial(baseColorTexture=img,
+                       metallicRoughnessTexture=mr_map(64, rough, metal, seed),
+                       normalTexture=nrm,
+                       metallicFactor=1.0, roughnessFactor=1.0,
+                       alphaMode='OPAQUE', doubleSided=True)
+
+# ---------------- geometry ----------------
 def box_tris(w, h, d, x, y, z, ry=0):
     b = trimesh.creation.box(extents=(w, h, d))
     if ry: b.apply_transform(trimesh.transformations.rotation_matrix(math.radians(ry), (0, 1, 0)))
@@ -223,27 +233,16 @@ def build_unmerged(tris, tile):
     uv = np.zeros((len(v), 2), np.float32)
     for f in range(len(tris)):
         ax = int(np.argmax(np.abs(n[f])))
-        idx = [i for i in range(3) if i != ax]
-        if ax == 1: idx = [0, 2]
-        p = tris[f][:, idx] / tile
-        uv[f * 3:(f + 1) * 3] = p
+        idx = [0, 2] if ax == 1 else [i for i in range(3) if i != ax]
+        uv[f * 3:(f + 1) * 3] = tris[f][:, idx] / tile
     return v, nf, uv, np.arange(len(v), dtype=np.uint32).reshape(-1, 3)
 
-def mat_for(img, rough, metal, seed, normal_strength=1.4, alpha=None):
-    arr = np.array(img)
-    return PBRMaterial(baseColorTexture=img,
-                       metallicRoughnessTexture=mr_map(img.width, rough, metal, seed),
-                       normalTexture=normal_from(arr, normal_strength),
-                       metallicFactor=1.0, roughnessFactor=1.0,
-                       alphaMode=alpha or 'OPAQUE', doubleSided=True)
-
 # ---------------- main ----------------
-def find_input(explicit):
-    cands = [explicit] if explicit else []
-    cands += ['environment.glb', 'environment.txt', 'shipment.glb', 'shipment.txt',
-              'assets/environment.glb', 'assets/environment.txt']
+def find_input():
+    cands = ['environment.glb', 'environment.txt', 'shipment.glb', 'shipment.txt',
+             'assets/environment.glb', 'assets/environment.txt']
     for c in cands:
-        if c and os.path.exists(c):
+        if os.path.exists(c):
             with open(c, 'rb') as f:
                 if f.read(4) == b'glTF': return c
     for f in os.listdir('.'):
@@ -253,29 +252,23 @@ def find_input(explicit):
     raise SystemExit('No GLB input found (environment.glb / environment.txt).')
 
 def main(out):
-    src = find_input(None)
+    src = find_input()
     print('input:', src)
     js, bin_ = load_glb(src)
     prims = read_primitives(js, bin_)
     imgs = source_images(js, bin_)
-    # detail image per material-name keyword
-    def detail_for(mname):
-        for ti, t in enumerate(js.get('textures', [])):
-            mi = None
-            for k, m in enumerate(js.get('materials', [])):
+
+    def detail_for(key):
+        key = key.lower()
+        for k, m in enumerate(js.get('materials', [])):
+            nm = m.get('name', '').lower()
+            if key in nm:
                 bc = m.get('pbrMetallicRoughness', {}).get('baseColorTexture', {})
-                if bc.get('index') == ti: mi = k; break
-            if mi is not None and mi < len(js['materials']):
-                nm = js['materials'][mi].get('name', '').lower()
-                key = mname.lower()
-                if ('red' in key and 'red' in nm) or ('bamboo' in key and 'bamboo' in nm) \
-                   or ('concrete' in key and 'concrete' in nm) or ('generic' in key and 'generic' in nm):
-                    return imgs.get(ti)
+                ti = bc.get('index')
+                if ti is not None: return imgs.get(ti)
         return None
 
-    # gather world triangles + class
-    raw = []
-    allv = []
+    raw = []; allv = []
     for pw, faces, mname in prims:
         tris = pw[faces]
         allv.append(tris.reshape(-1, 3))
@@ -283,27 +276,24 @@ def main(out):
         bbmin = tris.reshape(-1, 3).min(0); bbmax = tris.reshape(-1, 3).max(0)
         dim = bbmax - bbmin; ctr = (bbmax + bbmin) / 2
         if 'bamboo' in mn or 'wood' in mn: cls = 'wood'
-        elif 'concrete' in mn: cls = 'deck'
+        elif 'concrete' in mn: cls = 'deck' if dim[1] < .6 else 'metal'
         elif 'black' in mn: cls = 'metal'
         elif 'red' in mn: cls = 'container'
-        else:
-            cls = 'container' if (dim[1] > 1.5 and dim.max() > 3) else 'metal'
+        else: cls = 'container' if (dim[1] > 1.5 and dim.max() > 3) else 'metal'
         raw.append((tris, cls, ctr))
     allv = np.vstack(allv)
     mn = allv.min(0); mx = allv.max(0)
     span = max(mx[0] - mn[0], mx[2] - mn[2])
     scale = 26.0 / span if span > 0 else 1.0
     cx = (mn[0] + mx[0]) / 2; cz = (mn[2] + mx[2]) / 2; y0 = mn[1]
-    def xf(p):
-        q = (p - np.array([cx, y0, cz])) * scale
-        return q
+    off = np.array([cx, y0, cz])
+    def xf(p): return (p - off) * scale
 
     buckets = {}
     def add(cls, tris, name):
         buckets.setdefault(name, {'cls': cls, 'tris': []})['tris'].append(tris)
     for tris, cls, ctr in raw:
-        t = xf(tris)
-        c = xf(ctr)
+        t = xf(tris); c = xf(ctr)
         if cls == 'container':
             if c[0] < -3: name = 'left_wall'
             elif c[2] < -3 and c[1] > 2.6: name = 'center_green'
@@ -311,55 +301,52 @@ def main(out):
             elif c[0] > 3: name = 'center_red'
             else: name = 'center_blue'
         elif cls == 'deck': name = 'deck'
-        elif cls == 'wood': name = 'steel_merged'
+        elif cls == 'wood': name = 'wood_merged'
         else: name = 'steel_merged'
         add(cls, t, name)
 
     # hero props near lobby focus
     add('metal', cyl_tris(.35, 1, -3.2, .5, -1.2), 'drum')
-    add('metal', box_tris(1.15, .5, .72, 4.6, .27, -4.6), 'alum_stack')
-    add('metal', box_tris(1.15, .5, .72, 4.6, .79, -4.6), 'alum_stack')
-    add('metal', box_tris(1.15, .5, .72, 4.6, 1.31, -4.6), 'alum_stack')
+    for i in range(3):
+        add('metal', box_tris(1.15, .5, .72, 4.6, .27 + i * .52, -4.6), 'alum_stack')
     add('container', box_tris(.55, .42, .5, 3.6, .33, -4.2), 'crates_blue')
     add('container', box_tris(.55, .42, .5, 4.2, .33, -4.2), 'crates_white')
     add('container', box_tris(.55, .42, .5, 3.6, .77, -4.2), 'crates_white')
     add('container', box_tris(.55, .42, .5, 4.2, .77, -4.2), 'crates_blue')
     add('container', box_tris(1.6, 2.2, 1.4, 7.2, 1.1, -3.6), 'beige_case')
     add('metal', box_tris(.5, .18, .3, -3.4, 4.2, -6.0), 'lamp')
-    # walkway decal plane
-    wt = walkway_tex()
-    wv = np.array([[-9, .015, 6], [9, .015, 6], [9, .015, -8], [-9, .015, -8]], np.float32)
-    wf = np.array([[0, 1, 2], [0, 2, 3]], np.uint32)
-    wuv = np.array([[0, 1], [1, 1], [1, 0], [0, 0]], np.float32)
 
-    # textures per class
     tex = {
-        'left_wall':   mat_for(container_tex((45, 78, 122), 'Rohan', 11, detail_for('generic')), .58, .5, 11),
-        'center_blue': mat_for(container_tex((51, 84, 127), 'BLOCK', 12, detail_for('generic')), .58, .5, 12),
-        'center_green':mat_for(container_tex((47, 74, 80), '..VOGEL', 13, detail_for('generic')), .58, .5, 13),
-        'center_red':  mat_for(container_tex((122, 63, 51), 'HARBOR', 14, detail_for('red')), .62, .45, 14),
-        'deck':        mat_for(deck_tex(detail_for('concrete'), 21), .28, .35, 21, normal_strength=1.0),
-        'wood':        mat_for(wood_tex(detail_for('bamboo'), 31), .6, .1, 31),
-        'metal':       mat_for(metal_tex(41), .5, .7, 41),
-        'drum':        mat_for(metal_tex(42), .45, .6, 42),
-        'alum_stack':  mat_for(metal_tex(43), .32, .85, 43),
-        'crates_blue': mat_for(container_tex((31, 111, 181), '', 15), .6, .05, 15),
-        'crates_white':mat_for(container_tex((232, 232, 232), '', 16), .6, .05, 16),
-        'beige_case':  mat_for(container_tex((207, 196, 168), '', 17), .72, .1, 17),
-        'lamp':        PBRMaterial(baseColorFactor=[.87, .92, 1, 1], emissiveFactor=[1, 1, 1],
-                                   metallicFactor=0, roughnessFactor=.4, doubleSided=True),
+        'left_wall':    mat_for(container_tex((45, 78, 122), 'Rohan', 11, detail_for('generic')), .58, .5, 11, 1.6),
+        'center_blue':  mat_for(container_tex((51, 84, 127), 'BLOCK', 12, detail_for('generic')), .58, .5, 12, 1.6),
+        'center_green': mat_for(container_tex((47, 74, 80), '..VOGEL', 13, detail_for('generic')), .58, .5, 13, 1.6),
+        'center_red':   mat_for(container_tex((122, 63, 51), 'HARBOR', 14, detail_for('red')), .62, .45, 14, 1.6),
+        'deck':         mat_for(deck_tex(detail_for('concrete'), 21), .28, .35, 21, 1.0),
+        'wood_merged':  mat_for(wood_tex(detail_for('bamboo'), 31), .6, .1, 31),
+        'steel_merged': mat_for(metal_tex(41), .5, .7, 41),
+        'drum':         mat_for(metal_tex(42), .45, .6, 42),
+        'alum_stack':   mat_for(metal_tex(43), .32, .85, 43),
+        'crates_blue':  mat_for(container_tex((31, 111, 181), '', 15), .6, .05, 15),
+        'crates_white': mat_for(container_tex((232, 232, 232), '', 16), .6, .05, 16),
+        'beige_case':   mat_for(container_tex((207, 196, 168), '', 17), .72, .1, 17),
+        'lamp':         PBRMaterial(baseColorFactor=[.87, .92, 1, 1], emissiveFactor=[1, 1, 1],
+                                    metallicFactor=0, roughnessFactor=.4, doubleSided=True),
     }
     tiles = {'container': 2.44, 'deck': 4.0, 'wood': 1.2, 'metal': 1.5}
 
     sc = trimesh.Scene()
     for name, b in buckets.items():
         tris = np.vstack(b['tris'])
-        cls = b['cls']
-        v, n, uv, f = build_unmerged(tris, tiles.get(cls, 1.5))
+        v, n, uv, f = build_unmerged(tris, tiles.get(b['cls'], 1.5))
         m = trimesh.Trimesh(vertices=v, faces=f, vertex_normals=n, process=False)
-        m.visual = trimesh.visual.TextureVisuals(uv=uv, material=tex[name])
+        material = tex.get(name) or tex.get(b['cls']) or tex['steel_merged']
+        m.visual = trimesh.visual.TextureVisuals(uv=uv, material=material)
         sc.add_geometry(m, node_name=name, geom_name=name)
-    # walkway
+
+    wt = walkway_tex()
+    wv = np.array([[-9, .015, 6], [9, .015, 6], [9, .015, -8], [-9, .015, -8]], np.float32)
+    wf = np.array([[0, 1, 2], [0, 2, 3]], np.uint32)
+    wuv = np.array([[0, 1], [1, 1], [1, 0], [0, 0]], np.float32)
     wm = trimesh.Trimesh(vertices=wv, faces=wf, process=False)
     wm.visual = trimesh.visual.TextureVisuals(uv=wuv, material=PBRMaterial(
         baseColorTexture=wt, metallicFactor=0, roughnessFactor=.5, alphaMode='BLEND', doubleSided=True))
