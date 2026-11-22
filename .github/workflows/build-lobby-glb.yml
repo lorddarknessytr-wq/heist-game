@@ -19,16 +19,28 @@ jobs:
 
       - name: Install Blender
         run: |
+          set -euxo pipefail
           sudo apt-get update
           sudo apt-get install -y blender
+          blender --version
 
       - name: Generate lobby.glb
         run: |
+          set -euxo pipefail
+          echo "Repository: $PWD"
+          test -f scripts/generate_lobby.py
           mkdir -p build
-          blender --background --factory-startup --python scripts/generate_lobby.py -- --output build/lobby.glb
+          blender --background --factory-startup --python scripts/generate_lobby.py -- --output "$PWD/build/lobby.glb"
+          # Blender can occasionally print a Python traceback while its process
+          # still returns success; check the artifact immediately in this step.
+          test -s build/lobby.glb
+          echo "Files produced in build/:"
+          ls -lah build/
 
       - name: Verify output
         run: |
+          set -euxo pipefail
+          test -f build/lobby.glb
           test -s build/lobby.glb
           ls -lh build/lobby.glb
 
