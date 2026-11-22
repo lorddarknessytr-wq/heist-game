@@ -9,6 +9,7 @@ from trimesh.visual.material import PBRMaterial
 
 rng = np.random.default_rng(20261122)
 S = 512
+RESAMPLE = getattr(Image, "Resampling", Image).BICUBIC
 
 def font(sz):
     for p in ("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
@@ -16,7 +17,10 @@ def font(sz):
               "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"):
         if os.path.exists(p):
             return ImageFont.truetype(p, sz)
-    return ImageFont.load_default()
+    try:
+        return ImageFont.load_default(size=sz)
+    except TypeError:
+        return ImageFont.load_default()
 
 def grime(d, w, h, n, col, a):
     for _ in range(n):
@@ -43,7 +47,8 @@ def container_tex(base, rohan=False, vogel=False, seam=False, ribs=False):
     grime(d, S, S, 260, (10, 14, 18), 42)
     grime(d, S, S, 110, (210, 220, 225), 14)
     rust(d, S, S, 26)
-    d.rectangle([0, 0, S, 10], fill=(0, 0, 0, 90)); d.rectangle([0, S - 12, S, S], fill=(0, 0, 0, 90))
+    d.rectangle([0, 0, S, 10], fill=(0, 0, 0, 90))
+    d.rectangle([0, S - 12, S, S], fill=(0, 0, 0, 90))
     if seam: d.rectangle([0, S // 2 - 4, S, S // 2 + 4], fill=(0, 0, 0, 140))
     if rohan:
         d.text((26, S - 128), "Rohan", font=font(92), fill=(190, 205, 220, 92))
@@ -66,13 +71,16 @@ def deck_tex():
     bd.rectangle([0, 12, S * 3, 120], fill=(16, 21, 29, 255))
     bd.rectangle([0, 5, S * 3, 13], fill=(176, 138, 30, 215))
     bd.rectangle([0, 119, S * 3, 127], fill=(176, 138, 30, 215))
-    band = band.rotate(22, expand=True, resample=Image.BICUBIC)
+    band = band.rotate(22, expand=True, resample=RESAMPLE)
     im.paste(band, ((S - band.width) // 2, (S - band.height) // 2), band)
     grime(d, S, S, 300, (8, 12, 14), 55)
     for _ in range(26):
         x, y = int(rng.integers(0, S)), int(rng.integers(0, S))
         d.ellipse([x, y, x + int(rng.integers(8, 34)), y + int(rng.integers(6, 20))],
                   fill=(122, 63, 40, int(rng.integers(30, 90))))
+    for _ in range(40):  # wet sheen streaks
+        x, y = int(rng.integers(0, S)), int(rng.integers(0, S))
+        d.rectangle([x, y, x + 2, y + int(rng.integers(20, 80))], fill=(200, 220, 235, 14))
     d.line([(S // 4, 0), (S // 4, S)], fill=(0, 0, 0, 60), width=2)
     d.line([(S // 2, 0), (S // 2, S)], fill=(0, 0, 0, 60), width=2)
     d.line([(3 * S // 4, 0), (3 * S // 4, S)], fill=(0, 0, 0, 60), width=2)
@@ -92,43 +100,40 @@ def alum_tex():
                     fill=cols[i % 4] + (215,))
     for _ in range(40):
         x, y = int(rng.integers(0, S)), int(rng.integers(0, S))
-        d.line([(x, y), (x + int(rng.integers(10, 50)), y + int(rng.integers(-3, 4))],
+        d.line([(x, y), (x + int(rng.integers(10, 50)), y + int(rng.integers(-3, 4)))],
                fill=(255, 255, 255, 90))
     grime(d, S, S, 120, (40, 44, 48), 30)
     return im
+
+def emblem(d, cx, cy, r, col):
+    d.ellipse([cx - r, cy - r, cx + r, cy + r], outline=col, width=5)
+    d.ellipse([cx - r * .62, cy - r * .62, cx + r * .62, cy + r * .62], outline=col, width=4)
+    d.ellipse([cx - r * .62, cy - r * .28, cx + r * .62, cy + r * .28], outline=col, width=4)
+    d.line([(cx, cy - r * .62), (cx, cy + r * .62)], fill=col, width=4)
+    for s in (-1, 1):
+        d.polygon([(cx + s * r * .2, cy - r * .1), (cx + s * r * .95, cy - r * .55),
+                   (cx + s * r * .75, cy - r * .05), (cx + s * r * .95, cy + r * .15),
+                   (cx + s * r * .25, cy + r * .25)], fill=col)
 
 def crate_tex(base, dark):
     im = Image.new("RGB", (256, 256), base); d = ImageDraw.Draw(im, "RGBA")
     d.rectangle([6, 6, 250, 250], outline=(0, 0, 0, 70), width=5)
     for i in (1, 2, 3):
         d.line([(i * 64, 10), (i * 64, 246)], fill=(0, 0, 0, 60), width=4)
-    cx = cy = 128; r = 52
-    d.ellipse([cx - r, cy - r, cx + r, cy + r], outline=dark, width=5)
-    d.ellipse([cx - r * .62, cy - r * .62, cx + r * .62, cy + r * .62], outline=dark, width=4)
-    d.ellipse([cx - r * .62, cy - r * .28, cx + r * .62, cy + r * .28], outline=dark, width=4)
-    d.line([(cx, cy - r * .62), (cx, cy + r * .62)], fill=dark, width=4)
-    for s in (-1, 1):
-        d.polygon([(cx + s * r * .2, cy - r * .1), (cx + s * r * .95, cy - r * .55),
-                   (cx + s * r * .75, cy - r * .05), (cx + s * r * .95, cy + r * .15),
-                   (cx + s * r * .25, cy + r * .25)], fill=dark)
+    emblem(d, 128, 128, 52, dark)
     grime(d, 256, 256, 90, (20, 24, 28), 30)
     return im
 
 def drum_tex():
     im = Image.new("RGB", (256, 256), "#b9b8b0"); d = ImageDraw.Draw(im, "RGBA")
-    d.rectangle([0, 0, 256, 14], fill=(70, 66, 58, 140)); d.rectangle([0, 240, 256, 256], fill=(70, 66, 58, 140))
+    d.rectangle([0, 0, 256, 14], fill=(70, 66, 58, 140))
+    d.rectangle([0, 240, 256, 256], fill=(70, 66, 58, 140))
     for _ in range(14):
-        x = int(rng.integers(0, 256)); d.rectangle([x, 10, x + 3, 10 + int(rng.integers(14, 44))], fill=(120, 80, 50, 110))
+        x = int(rng.integers(0, 256))
+        d.rectangle([x, 10, x + 3, 10 + int(rng.integers(14, 44))], fill=(120, 80, 50, 110))
     d.line([(0, 85), (256, 85)], fill=(60, 58, 52, 130), width=4)
     d.line([(0, 170), (256, 170)], fill=(60, 58, 52, 130), width=4)
-    cx, cy, r = 128, 128, 56; col = (28, 30, 34, 230)
-    d.ellipse([cx - r, cy - r, cx + r, cy + r], outline=col, width=5)
-    d.ellipse([cx - r * .62, cy - r * .62, cx + r * .62, cy + r * .62], outline=col, width=4)
-    d.ellipse([cx - r * .62, cy - r * .28, cx + r * .62, cy + r * .28], outline=col, width=4)
-    for s in (-1, 1):
-        d.polygon([(cx + s * r * .2, cy - r * .1), (cx + s * r * .95, cy - r * .55),
-                   (cx + s * r * .75, cy - r * .05), (cx + s * r * .95, cy + r * .15),
-                   (cx + s * r * .25, cy + r * .25)], fill=col)
+    emblem(d, 128, 128, 56, (28, 30, 34, 230))
     grime(d, 256, 256, 140, (60, 56, 48), 45)
     return im
 
@@ -144,7 +149,8 @@ def beige_tex():
     return im
 
 def corr_normal():
-    x = np.arange(256); nx = -np.cos(x / 8 * 2 * np.pi) * .85
+    x = np.arange(256)
+    nx = -np.cos(x / 8 * 2 * np.pi) * .85
     nz = np.sqrt(np.maximum(.05, 1 - nx ** 2))
     a = np.zeros((256, 256, 3), np.uint8)
     a[..., 0] = ((nx * .5 + .5) * 255).astype(np.uint8)[None, :]
@@ -155,7 +161,9 @@ def corr_normal():
 def mr_tex(rough, metal, variation=0):
     a = np.zeros((64, 64, 3), np.uint8)
     r = np.clip(rough * 255 + rng.integers(-variation, variation + 1, (64, 64)), 0, 255)
-    a[..., 0] = 255; a[..., 1] = r.astype(np.uint8); a[..., 2] = int(metal * 255)
+    a[..., 0] = 255
+    a[..., 1] = r.astype(np.uint8)
+    a[..., 2] = int(metal * 255)
     return Image.fromarray(a)
 
 def tex_mat(img, rough, metal, normal=None, var=0):
@@ -167,13 +175,34 @@ def fac_mat(rgb, rough, metal, emissive=None):
                        metallicFactor=metal, roughnessFactor=rough,
                        emissiveFactor=emissive, doubleSided=True)
 
+def merge(ms):
+    """Concatenate meshes ignoring visuals (deterministic, version-proof)."""
+    v = np.vstack([m.vertices for m in ms])
+    f, off = [], 0
+    for m in ms:
+        f.append(m.faces + off)
+        off += len(m.vertices)
+    return trimesh.Trimesh(vertices=v, faces=np.vstack(f), process=False)
+
+def torus(R, r, ms=12, ns=8):
+    try:
+        return trimesh.creation.torus(major_radius=R, minor_radius=r,
+                                      major_sections=ms, minor_sections=ns)
+    except Exception:
+        t = np.linspace(0, 2 * np.pi, ns, endpoint=False)
+        prof = np.column_stack([R + r * np.cos(t), r * np.sin(t)])
+        prof = np.vstack([prof, prof[0]])
+        return trimesh.creation.revolve(prof, sections=ms)
+
 def auto_uv(m):
     m.unmerge_vertices()
     v = m.vertices[m.faces]; n = m.face_normals
     uv = np.zeros((len(v) * 3, 2))
     for f in range(len(v)):
-        ax = int(np.argmax(np.abs(n[f]))); idx = [i for i in range(3) if i != ax]
-        p = v[f][:, idx]; p = (p - p.min(0)) / (np.ptp(p, axis=0) + 1e-9)
+        ax = int(np.argmax(np.abs(n[f])))
+        idx = [i for i in range(3) if i != ax]
+        p = v[f][:, idx]
+        p = (p - p.min(0)) / (np.ptp(p, axis=0) + 1e-9)
         uv[f * 3:(f + 1) * 3] = p
     return uv
 
@@ -195,12 +224,15 @@ def T(x, y, z, ry=0, rx=0, rz=0):
     return M
 
 def box(w, h, d, x, y, z, **kw):
-    b = trimesh.creation.box(extents=(w, h, d)); b.apply_transform(T(x, y, z, **kw)); return b
+    b = trimesh.creation.box(extents=(w, h, d))
+    b.apply_transform(T(x, y, z, **kw))
+    return b
 
 def cylY(r, h, x, y, z, sec=12, **kw):
     c = trimesh.creation.cylinder(radius=r, height=h, sections=sec)
     c.apply_transform(trimesh.transformations.rotation_matrix(math.radians(-90), (1, 0, 0)))
-    c.apply_transform(T(x, y, z, **kw)); return c
+    c.apply_transform(T(x, y, z, **kw))
+    return c
 
 def align_cyl(r, a, b, sec=8):
     a, b = np.array(a, float), np.array(b, float)
@@ -241,16 +273,13 @@ def main(out):
     sBlue  = fac_mat((45, 78, 122), .60, .35)
     sGreen = fac_mat((47, 74, 80), .60, .35)
     steel  = fac_mat((35, 42, 49), .62, .45)
-    dark   = fac_mat((23, 28, 34), .55, .50)
-    rustM  = fac_mat((125, 58, 38), .70, .25)
-    orange = fac_mat((138, 60, 40), .65, .30)
     white  = fac_mat((232, 232, 232), .50, .10)
     lamp   = fac_mat((223, 234, 255), .40, .0, emissive=[1, 1, 1])
     seaM   = fac_mat((29, 36, 43), .85, .20)
 
     sc = trimesh.Scene()
 
-    # deck (manual UV, correct walkway direction)
+    # deck (manual UV so the diagonal walkway reads correctly)
     put(sc, quad((-8, 0, 5), (8, 0, 5), (8, 0, -9), (-8, 0, -9)), mDeck, "deck",
         uvfn=lambda m: m.visual.uv)
 
@@ -259,7 +288,7 @@ def main(out):
     put(sc, quad((-4.799, 0, 3), (-4.799, 0, -6), (-4.799, 5.2, -6), (-4.799, 5.2, 3)),
         mLeft, "left_wall", uvfn=lambda m: m.visual.uv)
     ribs = [box(.07, 5.0, .16, -4.76, 2.6, 2.85 - i * .285) for i in range(32)]
-    put(sc, trimesh.util.concatenate(ribs), sBlue, "left_ribs")
+    put(sc, merge(ribs), sBlue, "left_ribs")
 
     # central stack
     put(sc, box(3, 2.6, 2.44, -.7, 1.3, -7.8), sBlue, "center_blue_base")
@@ -270,7 +299,7 @@ def main(out):
     put(sc, quad((-2.25, 2.6, -6.579), (3.85, 2.6, -6.579), (3.85, 5.2, -6.579), (-2.25, 5.2, -6.579)),
         mGreen, "center_green", uvfn=lambda m: m.visual.uv)
 
-    # drum (wrapped UV so emblem faces camera)
+    # drum (wrapped UV so the emblem faces the camera)
     put(sc, cylY(.35, 1, -3.6, .5, -1.5, sec=24), mDrum, "drum", uvfn=lambda m: cyl_uv(m, .35, 1))
 
     # crates merged per color
@@ -279,11 +308,11 @@ def main(out):
         for c in range(2):
             b = box(.55, .42, .5, 4.62 + c * .6, .33 + r * .44, -5.4, ry=(r * 2 + c) * 3 - 3)
             (cb if (r + c) % 2 else cw).append(b)
-    put(sc, trimesh.util.concatenate(cb), mCB, "crates_blue")
-    put(sc, trimesh.util.concatenate(cw), mCW, "crates_white")
+    put(sc, merge(cb), mCB, "crates_blue")
+    put(sc, merge(cw), mCW, "crates_white")
 
     # aluminum stack + beige case
-    put(sc, trimesh.util.concatenate([box(1.15, .5, .72, 5.55, .27 + i * .52, -6.0, ry=(i - 1) * 3) for i in range(3)]),
+    put(sc, merge([box(1.15, .5, .72, 5.55, .27 + i * .52, -6.0, ry=(i - 1) * 3) for i in range(3)]),
         mAlum, "alum_stack")
     put(sc, box(1.6, 2.2, 1.4, 7.6, 1.1, -4.6), mBeige, "beige_case")
 
@@ -292,49 +321,68 @@ def main(out):
     def frame(cx, cy, cz, w, h, d):
         hw, hd, hh = w / 2 - .06, d / 2 - .06, h / 2 - .06
         for sx in (-1, 1):
-            for sz in (-1, 1): st.append(box(.12, h, .12, cx + sx * hw, cy, cz + sz * hd))
+            for sz in (-1, 1):
+                st.append(box(.12, h, .12, cx + sx * hw, cy, cz + sz * hd))
         for sy in (-1, 1):
-            st.append(box(w, .12, .12, cx, cy + sy * hh, cz - hd)); st.append(box(w, .12, .12, cx, cy + sy * hh, cz + hd))
-            st.append(box(.12, .12, d, cx - hw, cy + sy * hh, cz)); st.append(box(.12, .12, d, cx + hw, cy + sy * hh, cz))
-    frame(-6.15, 2.6, -1.5, 2.7, 5.2, 9); frame(-.7, 1.3, -7.8, 3, 2.6, 2.44)
-    frame(2.3, 1.3, -7.8, 3, 2.6, 2.44); frame(.8, 3.9, -7.8, 6.1, 2.6, 2.44)
-    for i in range(6):  # chain
-        t = trimesh.creation.torus(major_radius=.055, minor_radius=.016, major_sections=12, minor_sections=8)
-        t.apply_transform(T(-4.78, 2.62 - i * .11, 2.7, rx=90, ry=90 if i % 2 else 0)); st.append(t)
-    hook = trimesh.creation.torus(major_radius=.09, minor_radius=.02, major_sections=12, minor_sections=8)
-    hook.apply_transform(T(-4.78, 1.86, 2.7, rz=35)); st.append(hook)
+            st.append(box(w, .12, .12, cx, cy + sy * hh, cz - hd))
+            st.append(box(w, .12, .12, cx, cy + sy * hh, cz + hd))
+            st.append(box(.12, .12, d, cx - hw, cy + sy * hh, cz))
+            st.append(box(.12, .12, d, cx + hw, cy + sy * hh, cz))
+    frame(-6.15, 2.6, -1.5, 2.7, 5.2, 9)
+    frame(-.7, 1.3, -7.8, 3, 2.6, 2.44)
+    frame(2.3, 1.3, -7.8, 3, 2.6, 2.44)
+    frame(.8, 3.9, -7.8, 6.1, 2.6, 2.44)
+    for i in range(6):  # hanging chain
+        t = torus(.055, .016, 12, 8)
+        t.apply_transform(T(-4.78, 2.62 - i * .11, 2.7, rx=90, ry=90 if i % 2 else 0))
+        st.append(t)
+    hook = torus(.09, .02, 12, 8)
+    hook.apply_transform(T(-4.78, 1.86, 2.7, rz=35))
+    st.append(hook)
     st.append(box(.1, .5, .1, -4.8, 2.9, 2.7))
-    for s in (-1, 1):  # X braces + clamps
+    for s in (-1, 1):  # X lashing braces + clamps
         st.append(cylY(.035, 4.6, .8, 3.9, -6.55, sec=8, rz=s * 35.6))
-        for e in (-1, 1): st.append(box(.16, .16, .09, .8 + e * 1.87, 3.9 + e * s * 1.34, -6.55))
+        for e in (-1, 1):
+            st.append(box(.16, .16, .09, .8 + e * 1.87, 3.9 + e * s * 1.34, -6.55))
     for i in range(12):  # lashing plates + rings
-        t = i / 11; x = -6 + 12 * t + float(rng.uniform(-.7, .7)); z = 3 - 10 * t + float(rng.uniform(-.8, .8))
+        t = i / 11
+        x = -6 + 12 * t + float(rng.uniform(-.7, .7))
+        z = 3 - 10 * t + float(rng.uniform(-.8, .8))
         st.append(box(.24, .025, .15, x, .015, z, ry=float(rng.uniform(0, 90))))
-        ring = trimesh.creation.torus(major_radius=.05, minor_radius=.014, major_sections=10, minor_sections=6)
-        ring.apply_transform(T(x, .04, z)); st.append(ring)
+        ring = torus(.05, .014, 10, 6)
+        ring.apply_transform(T(x, .04, z))
+        st.append(ring)
     st.append(box(1.7, .12, 1.2, 4.9, .06, -5.4))  # pallet
     for i in range(3):  # case latches
-        for sx in (-.35, .35): st.append(box(.12, .1, .06, 5.55 + sx, .42 + i * .52, -5.62))
+        for sx in (-.35, .35):
+            st.append(box(.12, .1, .06, 5.55 + sx, .42 + i * .52, -5.62))
     st.append(box(1.6, 7, 1.2, -3.6, 3.5, -13.5))  # mast
-    st.append(box(3.4, .25, .25, -3.6, 6.4, -13.5)); st.append(box(.25, 2.4, .25, -2.4, 5.2, -13.5))
-    for i in range(9): st.append(box(.5, .05, .05, -2.72, .7 + i * .7, -12.86))
-    st.append(box(.05, 6.4, .05, -2.95, 3.6, -12.86)); st.append(box(.05, 6.4, .05, -2.5, 3.6, -12.86))
-    st.append(cylY(.12, 5, -1, 2.4, -12.5, rz=90))  # pipe
+    st.append(box(3.4, .25, .25, -3.6, 6.4, -13.5))
+    st.append(box(.25, 2.4, .25, -2.4, 5.2, -13.5))
+    for i in range(9):
+        st.append(box(.5, .05, .05, -2.72, .7 + i * .7, -12.86))
+    st.append(box(.05, 6.4, .05, -2.95, 3.6, -12.86))
+    st.append(box(.05, 6.4, .05, -2.5, 3.6, -12.86))
+    st.append(cylY(.12, 5, -1, 2.4, -12.5, rz=90))  # horizontal pipe
     st.append(box(7, 1.6, .25, 5.5, .8, -10.8))  # ship wall
-    for i in range(9): st.append(box(.05, 1, .05, -7 + i * 1.75, .5, -8.9))
+    for i in range(9):
+        st.append(box(.05, 1, .05, -7 + i * 1.75, .5, -8.9))
     st.append(box(15, .05, .05, .1, 1.0, -8.9))
     st.append(box(.08, 1.1, .08, 6.9, .55, -10.4))  # helmet post
-    st.append(align_cyl(.11, (8.5, 10.5, -7), (2.2, 5.2, -4.2)))  # boom
-    pul = trimesh.creation.torus(major_radius=.22, minor_radius=.06, major_sections=14, minor_sections=8)
-    pul.apply_transform(T(2.2, 5.05, -4.2)); st.append(pul)
+    st.append(align_cyl(.11, (8.5, 10.5, -7), (2.2, 5.2, -4.2)))  # crane boom
+    pul = torus(.22, .06, 14, 8)
+    pul.apply_transform(T(2.2, 5.05, -4.2))
+    st.append(pul)
     for a, b in [((2.2, 5, -4.2), (-1.5, .1, -6.5)), ((2.2, 5, -4.2), (.5, .1, -7.2)),
                  ((2.2, 5, -4.2), (3.8, 2.6, -7.6)), ((10, 12, -5), (2.2, 5.05, -4.2)),
                  ((10.5, 11, -6.5), (2.35, 5.1, -4.25)), ((9.5, 12.5, -4), (2.1, 5.15, -4.1)),
                  ((-3.6, 7, -13.5), (-6.2, 5.2, -6)), ((-3.6, 7, -13.5), (.8, 5.2, -7.8))]:
         st.append(align_cyl(.012, a, b, sec=6))
-    put(sc, trimesh.util.concatenate(st), steel, "steel_merged")
+    put(sc, merge(st), steel, "steel_merged")
 
-    put(sc, trimesh.creation.uv_sphere(radius=.16, count=[16, 10]).apply_transform(T(6.9, 1.12, -10.4)), white, "helmet")
+    helmet = trimesh.creation.uv_sphere(radius=.16, count=[16, 10])
+    helmet.apply_transform(T(6.9, 1.12, -10.4))
+    put(sc, helmet, white, "helmet")
     put(sc, box(.5, .18, .3, -3.6, 6.9, -13.2), lamp, "lamp")
     put(sc, quad((-120, -.55, 80), (120, -.55, 80), (120, -.55, -160), (-120, -.55, -160)), seaM, "sea",
         uvfn=lambda m: m.visual.uv)
@@ -346,5 +394,6 @@ def main(out):
     print(f"OK {out} | nodes={len(chk.geometry)} tris={tris} size={os.path.getsize(out)/1024:.0f} KB")
 
 if __name__ == "__main__":
-    ap = argparse.ArgumentParser(); ap.add_argument("--out", default="assets/lobby.glb")
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--out", default="assets/lobby.glb")
     main(ap.parse_args().out)
