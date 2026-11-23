@@ -1,9 +1,9 @@
 {
   "input": "environment.glb",
   "output": "dist/environment_enhanced.glb",
-  "seed": 7,
-  "detail": "standard",
-  "tex_size": 512,
+  "seed": 37,
+  "detail": "high",
+  "tex_size": 1024,
   "classification": {
     "container": 25,
     "metal": 75,
@@ -14,16 +14,16 @@
     "ground_asphalt": 1
   },
   "props": {
-    "barrels": 15,
-    "pallets": 7,
-    "crates": 6,
-    "tire_stacks": 4,
-    "hazard_pads": 6,
+    "barrels": 21,
+    "pallets": 10,
+    "crates": 9,
+    "tire_stacks": 6,
+    "hazard_pads": 4,
     "floodlights": 4
   },
   "wire_vertices": 16912,
   "materials": 36,
-  "output_bytes": 2401240,
+  "output_bytes": 4676736,
   "mesh_classes": {
     "Body85_Generic_0": "container",
     "Body87_Generic_0": "metal",
