@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Block Harbor — Environment Enhancer
+Block Harbor — Environment Enhancer v1.1
 GLB ساده را می‌گیرد و یک GLB حرفه‌ای با رنگ‌بندی بندری/جنگی + جزئیات تحویل می‌دهد.
-وابستگی‌ها: numpy, pillow   (بدون هیچ وابستگی سه‌بعدی دیگر — پارسر GLB داخلی است)
+وابستگی‌ها: numpy, pillow
+تغییرات v1.1: رفع کرش tex_wood، اصلاح وایندینگ استوانه‌ها، اصلاح محور سیم خارخاری،
+ارث‌بری رنگ پنل‌های کانتینر از بدنه، extensionsUsed پویا.
 """
 import argparse, io, json, math, os, random, struct, sys
 import numpy as np
@@ -13,8 +15,7 @@ from PIL import Image, ImageDraw, ImageFont, ImageFilter
 def read_glb(path):
     data = open(path, 'rb').read()
     if data[:4] != b'glTF':
-        sys.exit(f"[ERROR] '{path}' یک GLB معتبر نیست (magic='glTF' ندارد). "
-                 f"فایل environment.txt را بدون تغییر محتوا نگه دار؛ فقط پسوند مهم نیست.")
+        sys.exit(f"[ERROR] '{path}' یک GLB معتبر نیست (magic='glTF' ندارد).")
     ver, total = struct.unpack_from('<II', data, 4)
     if ver != 2: sys.exit("[ERROR] فقط glTF 2.0 پشتیبانی می‌شود.")
     off, gj, bin_ = 12, None, None
@@ -147,7 +148,8 @@ def tex_wood(s, rng):
     gap = (y % (s / 4)) < max(2, s * .015)
     grain = .9 + .1 * np.sin(2 * np.pi * x[None, :] / (s / 3) + row[:, None] * 1.7)
     a *= grain[:, :, None]
-    tint = rng.uniform(.85, 1.12, 4); a *= tint[row][:, :, None]
+    tint = rng.uniform(.85, 1.12, 4)
+    a *= tint[row][:, None, None]          # ✅ FIX: (s,1,1) broadcast روی (s,s,3)
     a[gap] *= .45; a += noise(rng, s, 8)
     img = to_img(a); d = ImageDraw.Draw(img)
     for r in range(4):
@@ -269,7 +271,7 @@ class MeshBuilder:
             p2 = (cx + r * n1[0], y1, cz + r * n1[2]); p3 = (cx + r * n0[0], y1, cz + r * n0[2])
             a = self._v(p0, n0, (i / seg, 0)); b = self._v(p1, n1, ((i + 1) / seg, 0))
             c = self._v(p2, n1, ((i + 1) / seg, 1)); d = self._v(p3, n0, (i / seg, 1))
-            self.i += [a, b, c, a, c, d]
+            self.i += [a, d, c, a, c, b]          # ✅ FIX: وایندینگ رو به بیرون
         for yy, nn in ((y1, (0, 1, 0)), (y0, (0, -1, 0))):
             c0 = self._v((cx, yy, cz), nn, (.5, .5))
             ring = []
@@ -279,7 +281,7 @@ class MeshBuilder:
                                     (.5 + .5 * math.cos(t), .5 + .5 * math.sin(t))))
             for i in range(seg):
                 a, b = ring[i], ring[(i + 1) % seg]
-                self.i += [c0, a, b] if nn[1] > 0 else [c0, b, a]
+                self.i += [c0, b, a] if nn[1] > 0 else [c0, a, b]   # ✅ FIX: کپ‌ها
     def arrays(self):
         return (np.asarray(self.p, np.float32), np.asarray(self.n, np.float32),
                 np.asarray(self.u, np.float32),
@@ -364,6 +366,22 @@ def main():
     for i, e in enumerate(containers): e['color'] = (i * 3 + args.seed) % len(PALETTE)
     for i, e in enumerate([e for e in entries if e['cls'] == 'door']):
         e['color'] = (i * 5 + 2) % len(PALETTE)
+
+    # ---- v1.1: پنل‌های نازکِ چسبیده به بدنه، رنگ همان کانتینر را می‌گیرند
+    pad = .02 * S
+    for e in entries:
+        if e['cls'] != 'metal': continue
+        sx, sy, sz = e['size']
+        if min(sx, sz) > .02 * S or sy < .05 * S: continue
+        c = e['center']
+        for k in containers:
+            if (k['lo'][0] - pad <= c[0] <= k['hi'][0] + pad and
+                k['lo'][1] - pad <= c[1] <= k['hi'][1] + pad and
+                k['lo'][2] - pad <= c[2] <= k['hi'][2] + pad):
+                long_dim = max(sx, sz)
+                e['cls'] = 'container' if long_dim >= .35 * max(k['size'][0], k['size'][2]) else 'door'
+                e['color'] = k['color']
+                break
 
     grounds = [e for e in entries if e['cls'].startswith('ground')]
     if grounds:
@@ -550,14 +568,15 @@ def main():
         r, pitch = .04 * u, .09 * u
         for e in fences:
             ax = 0 if e['size'][0] >= e['size'][2] else 2
+            perp = 2 if ax == 0 else 0                 # ✅ FIX: محور عمود افقی
             L = e['size'][ax]; steps = max(8, int(L / pitch * 8))
             prev = None
             for i in range(steps + 1):
                 t = L * i / steps; th = 2 * math.pi * t / pitch
-                p = [0, 0, 0]
-                p[ax] = e['lo'][ax] + t
-                p[1 - ax if ax == 0 else 0] = e['center'][2 if ax == 0 else 0] + r * math.sin(th)
-                p[1] = e['hi'][1] + r * .6 + r * math.cos(th)
+                p = [0.0, 0.0, 0.0]
+                p[ax] = float(e['lo'][ax]) + t
+                p[perp] = float(e['center'][perp]) + r * math.sin(th)
+                p[1] = float(e['hi'][1]) + r * .6 + r * math.cos(th)
                 if prev is not None: pts += [prev, p]
                 prev = p
         if pts:
@@ -567,7 +586,6 @@ def main():
             gj['accessors'].append({'bufferView': len(new_bvs) - 1, 'componentType': 5126,
                                     'count': len(arr), 'type': 'VEC3',
                                     'min': arr.min(0).tolist(), 'max': arr.max(0).tolist()})
-            mat_cache[('BH_RazorWire', False)] = len(materials)
             materials.append({'name': 'BH_RazorWire',
                               'pbrMetallicRoughness': {'baseColorFactor': [.16, .17, .19, 1],
                                                        'metallicFactor': 0, 'roughnessFactor': .9}})
@@ -587,8 +605,11 @@ def main():
     gj['textures'] = textures
     gj['images'] = images
     gj['samplers'] = [{'magFilter': 9729, 'minFilter': 9987, 'wrapS': 10497, 'wrapT': 10497}]
-    gj['extensionsUsed'] = ['KHR_texture_transform', 'KHR_materials_emissive_strength']
-    gj.setdefault('asset', {})['generator'] = 'BlockHarbor Enhancer 1.0'
+    used_ext = ['KHR_texture_transform']
+    if any('KHR_materials_emissive_strength' in m.get('extensions', {}) for m in materials):
+        used_ext.append('KHR_materials_emissive_strength')
+    gj['extensionsUsed'] = used_ext
+    gj.setdefault('asset', {})['generator'] = 'BlockHarbor Enhancer 1.1'
 
     write_glb(args.output, gj, bytes(bw.buf))
     report = {'input': args.input, 'output': args.output, 'seed': args.seed, 'detail': args.detail,
