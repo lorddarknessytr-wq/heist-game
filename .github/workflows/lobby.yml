@@ -1,25 +1,75 @@
-name: Remaster Shipment Lobby
+name: Build Enhanced Environment GLB
+
 on:
   workflow_dispatch:
+    inputs:
+      detail:
+        description: "سطح جزئیات"
+        type: choice
+        options: [low, standard, high]
+        default: standard
+      seed:
+        description: "Seed چیدمان/رنگ"
+        default: "7"
   push:
-    paths: ['tools/remaster_shipment.py', '.github/workflows/remaster.yml']
+    paths:
+      - "environment.glb"
+      - "environment.txt"
+      - "tools/enhance_environment.py"
+      - ".github/workflows/build-environment.yml"
+
 permissions:
   contents: write
+
+concurrency:
+  group: build-environment-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  remaster:
+  build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
-        with: { python-version: '3.11' }
-      - run: pip install "trimesh>=4.0" pillow numpy
-      - run: python tools/remaster_shipment.py --out assets/lobby.glb
-      - name: Commit remastered GLB
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: pip install numpy pillow
+
+      - name: Locate input file
+        id: input
+        run: |
+          if [ -f environment.glb ]; then
+            echo "path=environment.glb" >> "$GITHUB_OUTPUT"
+          elif [ -f environment.txt ]; then
+            echo "path=environment.txt" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::environment.glb یا environment.txt در ریشه مخزن پیدا نشد."
+            exit 1
+          fi
+
+      - name: Enhance environment
+        run: |
+          python tools/enhance_environment.py \
+            --input "${{ steps.input.outputs.path }}" \
+            --output dist/environment_enhanced.glb \
+            --report dist/report.json \
+            --detail "${{ inputs.detail || 'standard' }}" \
+            --seed "${{ inputs.seed || '7' }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: environment-enhanced
+          path: dist/
+          retention-days: 30
+
+      - name: Commit result back to repo
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add assets/lobby.glb
-          git diff --cached --quiet || git commit -m "remaster: assets/lobby.glb [skip ci]"
+          git add dist/environment_enhanced.glb dist/report.json
+          git diff --cached --quiet || git commit -m "build: enhanced environment [skip ci]"
           git push
-      - uses: actions/upload-artifact@v4
-        with: { name: lobby-remaster, path: assets/lobby.glb }
