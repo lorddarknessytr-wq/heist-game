@@ -1,0 +1,104 @@
+name: Optimize 3D Models to Mobile GLB
+
+on:
+  push:
+    paths:
+      - "assets/raw/**"
+      - "scripts/optimize_glb.py"
+      - ".github/workflows/optimize-models.yml"
+  workflow_dispatch:
+    inputs:
+      max_tris:
+        description: "Maximum triangles per mesh"
+        required: false
+        default: "20000"
+      max_tex:
+        description: "Maximum texture dimension (px)"
+        required: false
+        default: "512"
+      draco:
+        description: "Enable Draco geometry compression"
+        required: false
+        default: "true"
+
+permissions:
+  contents: write
+
+jobs:
+  optimize-glb:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js (for gltf-transform post-optimization)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Blender 4.2 & gltf-transform CLI
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xz-utils libxrender1 libxi6 libxxf86vm1 libxfixes3 libgl1 libxkbcommon0 libsm6
+          curl -fsSL https://download.blender.org/release/Blender4.2/blender-4.2.3-linux-x64.tar.xz -o blender.tar.xz
+          tar -xf blender.tar.xz
+          sudo mv blender-4.2.3-linux-x64 /opt/blender
+          sudo ln -sf /opt/blender/blender /usr/local/bin/blender
+          rm -f blender.tar.xz
+          npm install -g @gltf-transform/cli
+
+      - name: Convert and optimize raw models
+        env:
+          MAX_TRIS: ${{ github.event.inputs.max_tris || '20000' }}
+          MAX_TEX: ${{ github.event.inputs.max_tex || '512' }}
+          USE_DRACO: ${{ github.event.inputs.draco || 'true' }}
+        run: |
+          mkdir -p public/models
+          shopt -s nullglob globstar
+          DRACO_FLAG=""
+          if [ "$USE_DRACO" = "true" ]; then
+            DRACO_FLAG="--draco"
+          fi
+
+          for src in assets/raw/**/*.{fbx,obj,dae,blend,gltf,glb}; do
+            rel="${src#assets/raw/}"
+            base="${rel%.*}"
+            tmp_glb="/tmp/${base//\//_}.raw.glb"
+            out_glb="public/models/${base}.glb"
+            mkdir -p "$(dirname "$out_glb")"
+
+            echo "=== Processing $src -> $out_glb ==="
+            blender --background --python scripts/optimize_glb.py -- \
+              --input "$src" \
+              --output "$tmp_glb" \
+              --max-tris "$MAX_TRIS" \
+              --max-tex "$MAX_TEX" \
+              --ground \
+              $DRACO_FLAG
+
+            # Secondary pass: deduplicate accessors, prune unused nodes, convert textures to WebP
+            gltf-transform optimize "$tmp_glb" "$out_glb" \
+              --compress draco \
+              --texture-compress webp \
+              --texture-size "$MAX_TEX" || cp "$tmp_glb" "$out_glb"
+            rm -f "$tmp_glb"
+          done
+
+      - name: Upload optimized GLB artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: optimized-glb-models
+          path: public/models/**/*.glb
+          if-no-files-found: warn
+
+      - name: Commit optimized models back to repository
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add public/models/
+          if ! git diff --staged --quiet; then
+            git commit -m "chore(assets): optimize 3D models to mobile GLB [skip ci]"
+            git push
+          else
+            echo "No optimized model changes to commit."
+          fi
